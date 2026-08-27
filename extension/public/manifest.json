@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "ProctorAI",
+  "version": "0.1.0",
+  "description": "Intelligent real-time exam monitoring extension for ProctorAI.",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "ProctorAI"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [],
+  "host_permissions": []
+}
