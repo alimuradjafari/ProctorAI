@@ -22,6 +22,7 @@ ProctorAI is an LMS-independent exam proctoring platform. It provides the monito
 
 ---
 
+
 ## Architecture
 
 ```
@@ -43,6 +44,9 @@ Three primary components:
 See [docs/architecture.md](docs/architecture.md) for the full architecture document.
 
 ---
+
+**Phase 0 — Project Structure** (completed)
+
 
 ## Repository Structure
 
