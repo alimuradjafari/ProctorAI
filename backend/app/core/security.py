@@ -88,3 +88,30 @@ def verify_refresh_token(token: str) -> dict:
     if user_id is None:
         raise TokenError("Invalid token payload")
     return payload
+
+
+def create_participant_token(participant_session_id: str) -> str:
+    """Create a JWT token for a participant session."""
+    settings = get_settings()
+    expire = datetime.now(timezone.utc) + timedelta(
+        hours=settings.PARTICIPANT_TOKEN_EXPIRE_HOURS
+    )
+    payload = {
+        "sub": participant_session_id,
+        "type": "participant",
+        "exp": expire,
+    }
+    return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+
+
+def verify_participant_token(token: str) -> dict:
+    """Verify a participant token. Raises TokenError if invalid."""
+    payload = decode_token(token)
+    if payload is None:
+        raise TokenError("Invalid or expired token")
+    if payload.get("type") != "participant":
+        raise TokenError("Invalid token type")
+    psid = payload.get("sub")
+    if psid is None:
+        raise TokenError("Invalid token payload")
+    return payload

@@ -1,13 +1,9 @@
 // ProctorAI API Service Abstraction
 // Centralizes all backend communication
 
-const API_BASE_URL = 'http://localhost:8000/api'
+import type { JoinRequest, JoinResponse, ParticipantMeResponse } from '../types'
 
-export interface HealthResponse {
-  status: string
-  service: string
-  version: string
-}
+const API_BASE_URL = 'http://localhost:8000/api'
 
 class ApiService {
   private baseUrl: string
@@ -16,17 +12,28 @@ class ApiService {
     this.baseUrl = baseUrl
   }
 
-  async healthCheck(): Promise<HealthResponse> {
-    const response = await fetch(`${this.baseUrl}/health`)
+  async joinSession(request: JoinRequest): Promise<JoinResponse> {
+    const response = await fetch(`${this.baseUrl}/participant-sessions/join`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    })
     if (!response.ok) {
-      throw new Error('Health check failed')
+      const errorData = await response.json().catch(() => ({ detail: 'Join failed' }))
+      throw new Error(errorData.detail || 'Join failed')
     }
     return response.json()
   }
 
-  // Future: add authenticated request methods
-  // Future: add event publishing methods
-  // Future: add session join methods
+  async getParticipantMe(token: string): Promise<ParticipantMeResponse> {
+    const response = await fetch(`${this.baseUrl}/participant-sessions/me`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!response.ok) {
+      throw new Error('Session restore failed')
+    }
+    return response.json()
+  }
 }
 
 export const apiService = new ApiService(API_BASE_URL)

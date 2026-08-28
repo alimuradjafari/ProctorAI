@@ -2,6 +2,56 @@
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error'
 
+// Stored in chrome.storage.local
+export interface ParticipantSession {
+  participant_access_token: string
+  participant_session_id: string
+  student_id: string
+  student_name: string
+  exam_code: string
+  title: string
+  course_name: string | null
+  session_status: string
+  status: string
+}
+
+export interface JoinRequest {
+  exam_code: string
+  student_id: string
+  student_name: string
+}
+
+export interface JoinResponse {
+  participant_session_id: string
+  participant_access_token: string
+  token_type: string
+  participant: {
+    student_id: string
+    student_name: string
+    status: string
+    joined_at: string
+  }
+  monitoring_session: {
+    exam_code: string
+    title: string
+    course_name: string | null
+    status: string
+    join_mode: string
+  }
+}
+
+export interface ParticipantMeResponse {
+  participant_session_id: string
+  student_id: string
+  student_name: string
+  status: string
+  joined_at: string
+  exam_code: string
+  title: string
+  course_name: string | null
+  session_status: string
+}
+
 export type EventType =
   | 'PHONE_DETECTED'
   | 'MULTIPLE_FACES'

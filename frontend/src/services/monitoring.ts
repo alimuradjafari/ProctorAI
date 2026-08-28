@@ -1,5 +1,5 @@
 import { apiClient } from './api'
-import type { MonitoringSession, RosterEntry, RosterUploadResponse, JoinMode } from '../types/monitoring'
+import type { MonitoringSession, RosterEntry, RosterUploadResponse, JoinMode, Participant } from '../types/monitoring'
 
 const BASE = '/monitoring-sessions'
 
@@ -76,4 +76,11 @@ export async function deleteRosterEntry(sessionId: number, entryId: number): Pro
 
 export async function uploadRosterCsv(sessionId: number, file: File): Promise<RosterUploadResponse> {
   return apiClient.uploadFile<RosterUploadResponse>(`${BASE}/${sessionId}/roster/upload`, file)
+}
+
+// --- Participants ---
+
+export async function listParticipants(sessionId: number): Promise<Participant[]> {
+  const data = await apiClient.get<{ participants: Participant[] }>(`${BASE}/${sessionId}/participants`)
+  return data.participants
 }

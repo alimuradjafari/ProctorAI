@@ -88,16 +88,18 @@ ProctorAI/
 
 ## Current Development Status
 
-**Phase 2B — Monitoring Sessions & Student Roster** (current)
+**Phase 3 — Extension Join Flow & Participant Sessions** (current)
 
 This phase provides:
-- MonitoringSession model with unique exam codes (e.g., DSA-8K7P2)
-- Session lifecycle management (DRAFT → WAITING → LIVE → ENDED)
-- Student roster management (add, delete, CSV upload)
-- Instructor-only APIs with ownership enforcement
-- Frontend dashboard with session list, create, and detail pages
+- ParticipantSession model with opaque server-generated IDs (PS-...)
+- Student join API via exam code (server resolves session/instructor)
+- Separate participant JWT token type (distinct from instructor tokens)
+- Participant session restore endpoint for extension reload
+- Chrome extension join form with local storage persistence
+- Instructor participant list on session detail page
 
 Previous phases:
+- **Phase 2B**: Monitoring sessions, exam codes, roster
 - **Phase 2A**: Instructor authentication (JWT, login/register)
 - **Phase 1**: Project foundation (FastAPI, React, Chrome extension shells)
 - **Phase 0**: Architecture documentation
@@ -204,8 +206,8 @@ Load the extension in Chrome:
 |---|---|---|
 | 1 | Project foundation | ✅ Complete |
 | 2A | Database + instructor authentication | ✅ Complete |
-| 2B | Monitoring sessions + exam IDs + roster | ✅ Current |
-| 3 | Extension join flow + participant sessions | Planned |
+| 2B | Monitoring sessions + exam IDs + roster | ✅ Complete |
+| 3 | Extension join flow + participant sessions | ✅ Current |
 | 4 | Real-time event routing | Planned |
 | 5 | Browser monitoring (tab/fullscreen) | Planned |
 | 6 | Camera + face detection | Planned |

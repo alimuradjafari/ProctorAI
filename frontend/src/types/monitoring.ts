@@ -30,3 +30,12 @@ export interface RosterUploadResponse {
   skipped: number
   errors: string[]
 }
+
+export interface Participant {
+  participant_session_id: string
+  student_id: string
+  student_name: string
+  status: string
+  joined_at: string
+  last_seen_at: string | null
+}

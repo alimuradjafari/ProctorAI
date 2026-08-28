@@ -11,8 +11,9 @@ import {
   endSession,
   cancelSession,
   deleteSession,
+  listParticipants,
 } from '../services/monitoring'
-import type { MonitoringSession, RosterEntry, RosterUploadResponse } from '../types/monitoring'
+import type { MonitoringSession, RosterEntry, RosterUploadResponse, Participant } from '../types/monitoring'
 
 const STATUS_COLORS: Record<string, string> = {
   draft: 'bg-gray-100 text-gray-700',
@@ -49,9 +50,14 @@ function SessionDetail() {
   // Action state
   const [actionLoading, setActionLoading] = useState(false)
 
+  // Participants state
+  const [participants, setParticipants] = useState<Participant[]>([])
+  const [refreshingParticipants, setRefreshingParticipants] = useState(false)
+
   useEffect(() => {
     loadSession()
     loadRoster()
+    loadParticipants()
   }, [sessionId])
 
   async function loadSession() {
@@ -71,6 +77,18 @@ function SessionDetail() {
       setRoster(data)
     } catch {
       // Roster load failure is non-critical
+    }
+  }
+
+  async function loadParticipants() {
+    setRefreshingParticipants(true)
+    try {
+      const data = await listParticipants(sessionId)
+      setParticipants(data)
+    } catch {
+      // Participants load failure is non-critical
+    } finally {
+      setRefreshingParticipants(false)
     }
   }
 
@@ -378,6 +396,73 @@ function SessionDetail() {
                       >
                         Remove
                       </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Participants Section */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mt-6">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold text-gray-900">
+            Participants
+            <span className="ml-2 text-sm font-normal text-gray-500">
+              ({participants.length} joined)
+            </span>
+          </h2>
+          <button
+            onClick={loadParticipants}
+            disabled={refreshingParticipants}
+            className="inline-flex items-center gap-1 px-3 py-1.5 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+          >
+            <svg
+              className={`w-4 h-4 ${refreshingParticipants ? 'animate-spin' : ''}`}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+              />
+            </svg>
+            Refresh
+          </button>
+        </div>
+
+        {participants.length === 0 ? (
+          <p className="text-gray-500 text-sm text-center py-4">
+            No participants have joined yet
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-200">
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Student ID</th>
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Name</th>
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Status</th>
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Joined</th>
+                </tr>
+              </thead>
+              <tbody>
+                {participants.map((p) => (
+                  <tr key={p.participant_session_id} className="border-b border-gray-100">
+                    <td className="py-2 px-3 font-mono text-gray-900">{p.student_id}</td>
+                    <td className="py-2 px-3 text-gray-700">{p.student_name}</td>
+                    <td className="py-2 px-3">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                        {p.status}
+                      </span>
+                    </td>
+                    <td className="py-2 px-3 text-gray-500 text-xs">
+                      {new Date(p.joined_at).toLocaleTimeString()}
                     </td>
                   </tr>
                 ))}

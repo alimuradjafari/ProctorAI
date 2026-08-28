@@ -278,3 +278,25 @@ def upload_roster_csv(
         if "not found" in error_msg.lower():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=error_msg)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error_msg)
+
+
+# --- Participants Endpoint ---
+
+
+@router.get("/{session_id}/participants")
+def list_participants(
+    session_id: int,
+    instructor: dict = Depends(get_current_instructor),
+    db: Session = Depends(get_db),
+):
+    """List participants for a monitoring session (instructor-owned only)."""
+    from app.services.participant_service import ParticipantService
+
+    service = ParticipantService(db)
+    try:
+        participants = service.list_participants(session_id, instructor["id"])
+        return {"participants": participants}
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(e)
+        )
