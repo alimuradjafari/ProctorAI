@@ -49,6 +49,49 @@ class ApiClient {
     return response.json()
   }
 
+  async patch<T>(path: string, body?: unknown): Promise<T> {
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.getAuthHeaders(),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    })
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ detail: 'Request failed' }))
+      throw new ApiError(response.status, errorData.detail || 'Request failed')
+    }
+    return response.json()
+  }
+
+  async delete(path: string): Promise<void> {
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      method: 'DELETE',
+      headers: { ...this.getAuthHeaders() },
+    })
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ detail: 'Request failed' }))
+      throw new ApiError(response.status, errorData.detail || 'Request failed')
+    }
+  }
+
+  async uploadFile<T>(path: string, file: File): Promise<T> {
+    const formData = new FormData()
+    formData.append('file', file)
+
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      method: 'POST',
+      headers: { ...this.getAuthHeaders() },
+      body: formData,
+    })
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ detail: 'Request failed' }))
+      throw new ApiError(response.status, errorData.detail || 'Request failed')
+    }
+    return response.json()
+  }
+
   private async refreshAccessToken(): Promise<boolean> {
     const refreshToken = localStorage.getItem('refresh_token')
     if (!refreshToken) return false

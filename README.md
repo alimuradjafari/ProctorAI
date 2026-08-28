@@ -88,15 +88,19 @@ ProctorAI/
 
 ## Current Development Status
 
-**Phase 2A — Database Foundation & Instructor Authentication** (current)
+**Phase 2B — Monitoring Sessions & Student Roster** (current)
 
 This phase provides:
-- User and Instructor database models with Alembic migrations
-- Secure instructor registration and JWT authentication (access + refresh tokens)
-- Protected API endpoints with `get_current_instructor` dependency
-- Frontend login/register pages with protected dashboard
+- MonitoringSession model with unique exam codes (e.g., DSA-8K7P2)
+- Session lifecycle management (DRAFT → WAITING → LIVE → ENDED)
+- Student roster management (add, delete, CSV upload)
+- Instructor-only APIs with ownership enforcement
+- Frontend dashboard with session list, create, and detail pages
 
-It does **NOT** contain real monitoring, AI detection, or monitoring session features.
+Previous phases:
+- **Phase 2A**: Instructor authentication (JWT, login/register)
+- **Phase 1**: Project foundation (FastAPI, React, Chrome extension shells)
+- **Phase 0**: Architecture documentation
 
 ---
 
@@ -138,6 +142,29 @@ Verify: `GET http://localhost:8000/api/health`
 | POST | `/api/auth/refresh` | Exchange refresh token for new access token |
 | GET | `/api/auth/me` | Get authenticated instructor profile |
 
+### Monitoring Session Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/api/monitoring-sessions` | Create new monitoring session |
+| GET | `/api/monitoring-sessions` | List instructor's sessions |
+| GET | `/api/monitoring-sessions/{id}` | Get session details |
+| PATCH | `/api/monitoring-sessions/{id}` | Update session (DRAFT only) |
+| DELETE | `/api/monitoring-sessions/{id}` | Delete session (DRAFT/CANCELLED only) |
+| POST | `/api/monitoring-sessions/{id}/prepare` | DRAFT → WAITING |
+| POST | `/api/monitoring-sessions/{id}/start` | WAITING → LIVE |
+| POST | `/api/monitoring-sessions/{id}/end` | LIVE → ENDED |
+| POST | `/api/monitoring-sessions/{id}/cancel` | DRAFT/WAITING → CANCELLED |
+
+### Roster Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/api/monitoring-sessions/{id}/roster` | List roster entries |
+| POST | `/api/monitoring-sessions/{id}/roster` | Add student to roster |
+| DELETE | `/api/monitoring-sessions/{id}/roster/{entry_id}` | Remove student |
+| POST | `/api/monitoring-sessions/{id}/roster/upload` | Upload CSV roster |
+
 ### Running Tests
 
 ```bash
@@ -176,8 +203,8 @@ Load the extension in Chrome:
 | Phase | Focus | Status |
 |---|---|---|
 | 1 | Project foundation | ✅ Complete |
-| 2A | Database + instructor authentication | ✅ Current |
-| 2B | Monitoring sessions + exam IDs | Planned |
+| 2A | Database + instructor authentication | ✅ Complete |
+| 2B | Monitoring sessions + exam IDs + roster | ✅ Current |
 | 3 | Extension join flow + participant sessions | Planned |
 | 4 | Real-time event routing | Planned |
 | 5 | Browser monitoring (tab/fullscreen) | Planned |
