@@ -1,6 +1,15 @@
-import { Outlet, Link } from 'react-router-dom'
+import { Outlet, Link, useNavigate } from 'react-router-dom'
+import { useAuth } from '../hooks/useAuth'
 
 function DashboardLayout() {
+  const { instructor, logout } = useAuth()
+  const navigate = useNavigate()
+
+  const handleLogout = () => {
+    logout()
+    navigate('/login')
+  }
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Top Navigation */}
@@ -20,12 +29,17 @@ function DashboardLayout() {
               >
                 Dashboard
               </Link>
-              <Link
-                to="/login"
-                className="text-sm font-medium text-gray-400 hover:text-gray-600 transition-colors"
+              {instructor && (
+                <span className="text-sm text-gray-500">
+                  Welcome, <span className="font-medium text-gray-700">{instructor.full_name}</span>
+                </span>
+              )}
+              <button
+                onClick={handleLogout}
+                className="text-sm font-medium text-gray-400 hover:text-gray-600 transition-colors cursor-pointer"
               >
                 Logout
-              </Link>
+              </button>
             </nav>
           </div>
         </div>

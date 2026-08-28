@@ -88,9 +88,15 @@ ProctorAI/
 
 ## Current Development Status
 
-**Phase 1 — Project Foundation** (current)
+**Phase 2A — Database Foundation & Instructor Authentication** (current)
 
-This phase establishes the repository structure and runnable shells for all three components. It does **NOT** contain real monitoring, AI detection, or authentication features.
+This phase provides:
+- User and Instructor database models with Alembic migrations
+- Secure instructor registration and JWT authentication (access + refresh tokens)
+- Protected API endpoints with `get_current_instructor` dependency
+- Frontend login/register pages with protected dashboard
+
+It does **NOT** contain real monitoring, AI detection, or monitoring session features.
 
 ---
 
@@ -114,11 +120,30 @@ pip install -r requirements.txt
 
 # Configure database in backend/.env (copy from .env.example)
 
+# Apply database migrations
+alembic upgrade head
+
 # Run the development server
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 Verify: `GET http://localhost:8000/api/health`
+
+### Authentication Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/api/auth/register` | Register new instructor |
+| POST | `/api/auth/login` | Login, returns access + refresh tokens |
+| POST | `/api/auth/refresh` | Exchange refresh token for new access token |
+| GET | `/api/auth/me` | Get authenticated instructor profile |
+
+### Running Tests
+
+```bash
+cd backend
+.venv\Scripts\pytest tests/ -v
+```
 
 ### Frontend
 
@@ -150,8 +175,9 @@ Load the extension in Chrome:
 
 | Phase | Focus | Status |
 |---|---|---|
-| 1 | Project foundation | ✅ Current |
-| 2 | Instructor auth + monitoring sessions | Planned |
+| 1 | Project foundation | ✅ Complete |
+| 2A | Database + instructor authentication | ✅ Current |
+| 2B | Monitoring sessions + exam IDs | Planned |
 | 3 | Extension join flow + participant sessions | Planned |
 | 4 | Real-time event routing | Planned |
 | 5 | Browser monitoring (tab/fullscreen) | Planned |

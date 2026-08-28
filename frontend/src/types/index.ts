@@ -5,3 +5,5 @@ export interface HealthResponse {
   service: string
   version: string
 }
+
+export type { Instructor } from '../services/auth'

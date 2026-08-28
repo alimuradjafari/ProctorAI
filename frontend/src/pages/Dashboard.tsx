@@ -1,8 +1,21 @@
+import { useAuth } from '../hooks/useAuth'
+
 function Dashboard() {
+  const { instructor } = useAuth()
+
   return (
     <div>
       <h1 className="text-2xl font-bold text-gray-900 mb-2">Dashboard</h1>
       <p className="text-gray-600 mb-8">Monitor your exam sessions in real time.</p>
+
+      {instructor && (
+        <div className="bg-primary-50 border border-primary-200 rounded-xl p-4 mb-6">
+          <p className="text-primary-800 text-sm">
+            Welcome back, <span className="font-semibold">{instructor.full_name}</span>.
+            You are logged in as <span className="font-medium">{instructor.email}</span>.
+          </p>
+        </div>
+      )}
 
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
         <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -27,7 +40,7 @@ function Dashboard() {
           Create or select a monitoring session to begin proctoring.
         </p>
         <p className="text-xs text-gray-400 mt-4">
-          Session management will be available in Phase 2.
+          Session management will be available in Phase 2B.
         </p>
       </div>
     </div>
