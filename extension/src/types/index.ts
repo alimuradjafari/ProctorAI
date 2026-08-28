@@ -53,27 +53,39 @@ export interface ParticipantMeResponse {
 }
 
 export type EventType =
-  | 'PHONE_DETECTED'
-  | 'MULTIPLE_FACES'
-  | 'SUSPICIOUS_OBJECT'
-  | 'NO_FACE'
-  | 'FULLSCREEN_EXIT'
-  | 'TAB_SWITCH'
-  | 'CAMERA_OBSCURED'
-  | 'LOOKING_AWAY'
+  | 'phone_detected'
+  | 'multiple_faces'
+  | 'suspicious_object'
+  | 'no_face'
+  | 'fullscreen_exit'
+  | 'tab_switch'
+  | 'camera_obscured'
+  | 'looking_away'
 
-export type Severity = 'LOW' | 'MEDIUM' | 'HIGH'
+export type Severity = 'low' | 'medium' | 'high'
 
-export interface MonitoringEvent {
-  event_id: string
-  participant_session_id: string
-  monitoring_session_id: string
+// Event submission request — sent by participant to server
+// Server resolves: monitoring_session_id, participant_session_id, severity
+export interface EventSubmissionRequest {
   event_type: EventType
-  severity: Severity
-  confidence: number
-  occurred_at: string
-  duration_seconds?: number
+  confidence?: number | null
+  client_event_id?: string
+  client_occurred_at?: string
   metadata?: Record<string, unknown>
-  evidence_id?: string
-  created_at: string
+}
+
+// Event response — received from server after submission
+export interface EventResponse {
+  event_id: string
+  event_type: string
+  severity: string
+  confidence: number | null
+  client_event_id: string | null
+  metadata: Record<string, unknown>
+  received_at: string
+  participant: {
+    participant_session_id: string
+    student_id: string
+    student_name: string
+  }
 }

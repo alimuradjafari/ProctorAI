@@ -39,3 +39,33 @@ export interface Participant {
   joined_at: string
   last_seen_at: string | null
 }
+
+// Monitoring Events (Phase 4)
+export type EventType =
+  | 'phone_detected'
+  | 'multiple_faces'
+  | 'suspicious_object'
+  | 'no_face'
+  | 'fullscreen_exit'
+  | 'tab_switch'
+  | 'camera_obscured'
+  | 'looking_away'
+
+export type Severity = 'low' | 'medium' | 'high'
+
+export interface MonitoringEvent {
+  event_id: string
+  event_type: EventType
+  severity: Severity
+  confidence: number | null
+  client_event_id: string | null
+  metadata: Record<string, unknown>
+  received_at: string
+  participant: {
+    participant_session_id: string
+    student_id: string
+    student_name: string
+  }
+}
+
+export type WsConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error'

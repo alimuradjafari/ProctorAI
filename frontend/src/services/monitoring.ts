@@ -1,5 +1,12 @@
 import { apiClient } from './api'
-import type { MonitoringSession, RosterEntry, RosterUploadResponse, JoinMode, Participant } from '../types/monitoring'
+import type {
+  MonitoringSession,
+  RosterEntry,
+  RosterUploadResponse,
+  JoinMode,
+  Participant,
+  MonitoringEvent,
+} from '../types/monitoring'
 
 const BASE = '/monitoring-sessions'
 
@@ -84,3 +91,13 @@ export async function listParticipants(sessionId: number): Promise<Participant[]
   const data = await apiClient.get<{ participants: Participant[] }>(`${BASE}/${sessionId}/participants`)
   return data.participants
 }
+
+// --- Monitoring Events ---
+
+export async function listEvents(sessionId: number, limit = 100): Promise<MonitoringEvent[]> {
+  const data = await apiClient.get<{ events: MonitoringEvent[] }>(`${BASE}/${sessionId}/events?limit=${limit}`)
+  return data.events
+}
+
+// WebSocket base URL for monitoring events (derived from API base)
+export const WS_BASE_URL = 'ws://localhost:8000'

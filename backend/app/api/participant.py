@@ -4,11 +4,13 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.auth.participant_dependencies import get_current_participant
 from app.services.participant_service import ParticipantService
+from app.services.monitoring_event_service import MonitoringEventService, broadcast_event
 from app.schemas.participant import (
     JoinRequest,
     JoinResponse,
     ParticipantMeResponse,
 )
+from app.schemas.monitoring_event import EventSubmissionRequest, EventResponse
 
 router = APIRouter(prefix="/participant-sessions")
 
@@ -66,3 +68,38 @@ def get_participant_me(
         "course_name": ms.course_name,
         "session_status": ms.status.value,
     }
+
+
+@router.post("/events", response_model=EventResponse, status_code=status.HTTP_201_CREATED)
+async def submit_event(
+    request: EventSubmissionRequest,
+    token_payload: dict = Depends(get_current_participant),
+    db: Session = Depends(get_db),
+):
+    """Participant-authenticated event submission endpoint.
+
+    Server resolves: participant_session_id, monitoring_session_id, severity.
+    Client NEVER supplies instructor_id, monitoring_session_id, or severity.
+    """
+    psid = token_payload["sub"]  # participant_session_id from token
+
+    service = MonitoringEventService(db)
+    try:
+        result = service.submit_event(
+            participant_token_psid=psid,
+            event_type=request.event_type,
+            confidence=request.confidence,
+            client_event_id=request.client_event_id,
+            client_occurred_at=request.client_occurred_at,
+            metadata=request.metadata,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
+        )
+
+    # Broadcast only after successful commit (and only if not a duplicate)
+    if not result.get("is_duplicate"):
+        await broadcast_event(result)
+
+    return result["event"]

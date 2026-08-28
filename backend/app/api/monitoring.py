@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.auth.dependencies import get_current_instructor
 from app.services.monitoring_service import MonitoringService
+from app.services.monitoring_event_service import MonitoringEventService
 from app.schemas.monitoring import (
     MonitoringSessionCreate,
     MonitoringSessionUpdate,
@@ -14,6 +15,7 @@ from app.schemas.monitoring import (
     RosterListResponse,
     RosterUploadResponse,
 )
+from app.schemas.monitoring_event import EventHistoryResponse, EventResponse
 
 router = APIRouter(prefix="/monitoring-sessions")
 
@@ -296,6 +298,32 @@ def list_participants(
     try:
         participants = service.list_participants(session_id, instructor["id"])
         return {"participants": participants}
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(e)
+        )
+
+
+# --- Events Endpoint ---
+
+
+@router.get("/{session_id}/events", response_model=EventHistoryResponse)
+def list_events(
+    session_id: int,
+    limit: int = Query(default=100, ge=1, le=200),
+    instructor: dict = Depends(get_current_instructor),
+    db: Session = Depends(get_db),
+):
+    """Return recent monitoring events for an instructor-owned session.
+
+    - Newest events first.
+    - Default limit: 100, max: 200.
+    - Instructor A cannot access instructor B's events.
+    """
+    service = MonitoringEventService(db)
+    try:
+        events = service.list_events(session_id, instructor["id"], limit=limit)
+        return {"events": events}
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(e)

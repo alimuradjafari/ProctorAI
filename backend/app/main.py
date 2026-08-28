@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.core.config import get_settings
 from app.api import api_router
+from app.api.websocket import router as ws_router
 
 
 @asynccontextmanager
@@ -43,6 +44,7 @@ def create_app() -> FastAPI:
 
     # Register routes
     app.include_router(api_router)
+    app.include_router(ws_router)  # WebSocket routes (not under /api prefix)
 
     return app
 

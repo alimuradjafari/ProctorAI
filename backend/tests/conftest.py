@@ -9,10 +9,12 @@ import pytest
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+from unittest.mock import patch, MagicMock
 
 from app.core.database import Base, get_db
 from app.main import create_app
 from app.models import *  # noqa: F401, F403  — register all models
+from app.services import websocket_manager
 
 
 # SQLite in-memory with shared connection for testing
@@ -69,3 +71,36 @@ def client(db_session):
 
     app.dependency_overrides[get_db] = override_get_db
     return TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def reset_websocket_manager():
+    """Reset the in-memory WebSocket connection manager between tests."""
+    websocket_manager.manager._connections.clear()
+    yield
+    websocket_manager.manager._connections.clear()
+
+
+@pytest.fixture
+def ws_session_local(db_session):
+    """Patch WebSocket handler's SessionLocal to use the test database.
+
+    Returns a callable that mimics SessionLocal() but returns the shared
+    test session with a no-op close().
+    """
+
+    class NoCloseSession:
+        def __init__(self):
+            self._session = db_session
+
+        def __getattr__(self, name):
+            return getattr(self._session, name)
+
+        def close(self):
+            pass  # Don't close the shared test session
+
+    def test_session_local():
+        return NoCloseSession()
+
+    with patch("app.api.websocket.SessionLocal", test_session_local):
+        yield test_session_local

@@ -88,17 +88,22 @@ ProctorAI/
 
 ## Current Development Status
 
-**Phase 3 — Extension Join Flow & Participant Sessions** (current)
+**Phase 4 — Monitoring Event Pipeline + WebSocket Routing** (current)
 
 This phase provides:
-- ParticipantSession model with opaque server-generated IDs (PS-...)
-- Student join API via exam code (server resolves session/instructor)
-- Separate participant JWT token type (distinct from instructor tokens)
-- Participant session restore endpoint for extension reload
-- Chrome extension join form with local storage persistence
-- Instructor participant list on session detail page
+- MonitoringEvent model with complete event type contract (8 types)
+- Server-authoritative event severity mapping (clients never submit severity)
+- Participant-authenticated event submission API
+- Transport-level idempotency via client_event_id
+- Instructor event history API with ownership enforcement
+- WebSocket endpoint with first-message authentication
+- In-memory session-scoped connection manager
+- Real-time event broadcast to authenticated instructor dashboards
+- Live event display on SessionDetail page with WebSocket connection
+- Extension `sendMonitoringEvent()` helper for future detectors
 
 Previous phases:
+- **Phase 3**: Extension join flow, participant sessions, participant JWT
 - **Phase 2B**: Monitoring sessions, exam codes, roster
 - **Phase 2A**: Instructor authentication (JWT, login/register)
 - **Phase 1**: Project foundation (FastAPI, React, Chrome extension shells)
@@ -167,6 +172,26 @@ Verify: `GET http://localhost:8000/api/health`
 | DELETE | `/api/monitoring-sessions/{id}/roster/{entry_id}` | Remove student |
 | POST | `/api/monitoring-sessions/{id}/roster/upload` | Upload CSV roster |
 
+### Participant Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/api/participant-sessions/join` | Student join via exam code |
+| GET | `/api/participant-sessions/me` | Restore participant session |
+| POST | `/api/participant-sessions/events` | Submit monitoring event |
+
+### Event Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/api/monitoring-sessions/{id}/events` | List session events (instructor) |
+
+### WebSocket
+
+| Endpoint | Description |
+|---|---|
+| `/ws/monitoring-sessions/{id}` | Live event stream (instructor, first-message auth) |
+
 ### Running Tests
 
 ```bash
@@ -207,8 +232,8 @@ Load the extension in Chrome:
 | 1 | Project foundation | ✅ Complete |
 | 2A | Database + instructor authentication | ✅ Complete |
 | 2B | Monitoring sessions + exam IDs + roster | ✅ Complete |
-| 3 | Extension join flow + participant sessions | ✅ Current |
-| 4 | Real-time event routing | Planned |
+| 3 | Extension join flow + participant sessions | ✅ Complete |
+| 4 | Real-time event routing + WebSockets | ✅ Current |
 | 5 | Browser monitoring (tab/fullscreen) | Planned |
 | 6 | Camera + face detection | Planned |
 | 7 | Phone + object detection | Planned |

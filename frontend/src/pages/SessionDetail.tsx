@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import {
   getSession,
@@ -12,8 +12,17 @@ import {
   cancelSession,
   deleteSession,
   listParticipants,
+  listEvents,
+  WS_BASE_URL,
 } from '../services/monitoring'
-import type { MonitoringSession, RosterEntry, RosterUploadResponse, Participant } from '../types/monitoring'
+import type {
+  MonitoringSession,
+  RosterEntry,
+  RosterUploadResponse,
+  Participant,
+  MonitoringEvent,
+  WsConnectionState,
+} from '../types/monitoring'
 
 const STATUS_COLORS: Record<string, string> = {
   draft: 'bg-gray-100 text-gray-700',
@@ -54,11 +63,110 @@ function SessionDetail() {
   const [participants, setParticipants] = useState<Participant[]>([])
   const [refreshingParticipants, setRefreshingParticipants] = useState(false)
 
+  // Monitoring Events state (Phase 4)
+  const [events, setEvents] = useState<MonitoringEvent[]>([])
+  const [wsState, setWsState] = useState<WsConnectionState>('disconnected')
+  const wsRef = useRef<WebSocket | null>(null)
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const eventsRef = useRef<MonitoringEvent[]>([])
+
   useEffect(() => {
     loadSession()
     loadRoster()
     loadParticipants()
+    loadEvents()
   }, [sessionId])
+
+  // WebSocket connection effect
+  useEffect(() => {
+    // Only connect for LIVE sessions
+    if (session?.status !== 'live') {
+      return
+    }
+
+    connectWebSocket()
+
+    return () => {
+      // Cleanup on unmount
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current)
+      }
+      if (wsRef.current) {
+        wsRef.current.close()
+        wsRef.current = null
+      }
+    }
+  }, [session?.status, sessionId])
+
+  function connectWebSocket() {
+    const token = localStorage.getItem('access_token')
+    if (!token) return
+
+    setWsState('connecting')
+
+    const ws = new WebSocket(`${WS_BASE_URL}/ws/monitoring-sessions/${sessionId}`)
+    wsRef.current = ws
+
+    ws.onopen = () => {
+      // Send authentication message
+      ws.send(JSON.stringify({
+        type: 'authenticate',
+        access_token: token,
+      }))
+    }
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data)
+
+        if (data.type === 'authenticated') {
+          setWsState('connected')
+        } else if (data.type === 'monitoring_event') {
+          // Prepend event to local list, avoiding duplicates
+          const newEvent = data.event as MonitoringEvent
+          setEvents((prev) => {
+            // Check for duplicate by event_id
+            if (prev.some((e) => e.event_id === newEvent.event_id)) {
+              return prev
+            }
+            // Keep max 200 events in memory
+            const updated = [newEvent, ...prev]
+            return updated.slice(0, 200)
+          })
+        }
+      } catch {
+        // Ignore parse errors
+      }
+    }
+
+    ws.onclose = (event) => {
+      setWsState('disconnected')
+      wsRef.current = null
+
+      // Reconnect unless auth failed (codes 4401, 4404)
+      if (event.code !== 4401 && event.code !== 4404) {
+        reconnectTimeoutRef.current = setTimeout(() => {
+          connectWebSocket()
+        }, 3000)
+      } else {
+        setWsState('error')
+      }
+    }
+
+    ws.onerror = () => {
+      setWsState('error')
+    }
+  }
+
+  async function loadEvents() {
+    try {
+      const data = await listEvents(sessionId)
+      setEvents(data)
+      eventsRef.current = data
+    } catch {
+      // Events load failure is non-critical
+    }
+  }
 
   async function loadSession() {
     try {
@@ -471,7 +579,116 @@ function SessionDetail() {
           </div>
         )}
       </div>
+
+      {/* Live Monitoring Events Section (Phase 4) */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mt-6">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold text-gray-900">
+            Live Monitoring Events
+            <span className="ml-2 text-sm font-normal text-gray-500">
+              ({events.length})
+            </span>
+          </h2>
+          {/* Connection status indicator */}
+          <div className="flex items-center gap-2">
+            <span
+              className={`w-2 h-2 rounded-full ${
+                wsState === 'connected'
+                  ? 'bg-green-500'
+                  : wsState === 'connecting'
+                  ? 'bg-yellow-500 animate-pulse'
+                  : wsState === 'error'
+                  ? 'bg-red-500'
+                  : 'bg-gray-400'
+              }`}
+            />
+            <span className="text-xs text-gray-600">
+              {wsState === 'connected'
+                ? 'Connected'
+                : wsState === 'connecting'
+                ? 'Connecting...'
+                : wsState === 'error'
+                ? 'Connection error'
+                : 'Disconnected'}
+            </span>
+          </div>
+        </div>
+
+        {events.length === 0 ? (
+          <p className="text-gray-500 text-sm text-center py-4">
+            {session?.status === 'live'
+              ? 'No monitoring events yet. Events will appear here in real-time.'
+              : 'Monitoring events will appear here when the session is live.'}
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-200">
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Time</th>
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Student</th>
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Event Type</th>
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Severity</th>
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Confidence</th>
+                </tr>
+              </thead>
+              <tbody>
+                {events.map((event) => (
+                  <tr key={event.event_id} className="border-b border-gray-100">
+                    <td className="py-2 px-3 text-gray-500 text-xs">
+                      {new Date(event.received_at).toLocaleTimeString()}
+                    </td>
+                    <td className="py-2 px-3">
+                      <div className="text-gray-900">{event.participant.student_name}</div>
+                      <div className="text-xs text-gray-500 font-mono">
+                        {event.participant.student_id}
+                      </div>
+                    </td>
+                    <td className="py-2 px-3">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">
+                        {formatEventType(event.event_type)}
+                      </span>
+                    </td>
+                    <td className="py-2 px-3">
+                      <SeverityBadge severity={event.severity} />
+                    </td>
+                    <td className="py-2 px-3 text-gray-600 text-xs">
+                      {event.confidence !== null ? `${(event.confidence * 100).toFixed(0)}%` : '-'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
+  )
+}
+
+// Helper: format event type for display
+function formatEventType(type: string): string {
+  return type
+    .split('_')
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ')
+}
+
+// Severity badge component
+function SeverityBadge({ severity }: { severity: string }) {
+  const colors: Record<string, string> = {
+    high: 'bg-red-100 text-red-800',
+    medium: 'bg-yellow-100 text-yellow-800',
+    low: 'bg-blue-100 text-blue-800',
+  }
+  return (
+    <span
+      className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+        colors[severity] || 'bg-gray-100 text-gray-800'
+      }`}
+    >
+      {severity}
+    </span>
   )
 }
 
