@@ -88,21 +88,18 @@ ProctorAI/
 
 ## Current Development Status
 
-**Phase 4 — Monitoring Event Pipeline + WebSocket Routing** (current)
+**Phase 5 — Browser Monitoring (Tab Switch + Fullscreen Exit)** (current)
 
 This phase provides:
-- MonitoringEvent model with complete event type contract (8 types)
-- Server-authoritative event severity mapping (clients never submit severity)
-- Participant-authenticated event submission API
-- Transport-level idempotency via client_event_id
-- Instructor event history API with ownership enforcement
-- WebSocket endpoint with first-message authentication
-- In-memory session-scoped connection manager
-- Real-time event broadcast to authenticated instructor dashboards
-- Live event display on SessionDetail page with WebSocket connection
-- Extension `sendMonitoringEvent()` helper for future detectors
+- Automatic tab-switch detection via Chrome `tabs.onActivated` in background service worker
+- Automatic fullscreen-exit detection via Chrome `windows.onBoundsChanged` with state tracking
+- Monitoring armed/disarmed based on participant session presence in `chrome.storage.local`
+- Unique `client_event_id` per event using `crypto.randomUUID()` for transport idempotency
+- Graceful error handling: no crashes, no infinite retries on backend failures
+- `"type": "module"` in manifest to support ES module imports in service worker
 
 Previous phases:
+- **Phase 4**: Monitoring event pipeline, WebSocket routing, real-time delivery
 - **Phase 3**: Extension join flow, participant sessions, participant JWT
 - **Phase 2B**: Monitoring sessions, exam codes, roster
 - **Phase 2A**: Instructor authentication (JWT, login/register)
@@ -233,8 +230,8 @@ Load the extension in Chrome:
 | 2A | Database + instructor authentication | ✅ Complete |
 | 2B | Monitoring sessions + exam IDs + roster | ✅ Complete |
 | 3 | Extension join flow + participant sessions | ✅ Complete |
-| 4 | Real-time event routing + WebSockets | ✅ Current |
-| 5 | Browser monitoring (tab/fullscreen) | Planned |
+| 4 | Real-time event routing + WebSockets | ✅ Complete |
+| 5 | Browser monitoring (tab/fullscreen) | ✅ Current |
 | 6 | Camera + face detection | Planned |
 | 7 | Phone + object detection | Planned |
 | 8 | Gaze + camera-obscured detection | Planned |

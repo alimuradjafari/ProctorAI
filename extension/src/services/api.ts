@@ -66,18 +66,8 @@ class ApiService {
     })
 
     if (response.status === 401) {
-      // Token expired or invalid — clear stored session
-      await chrome.storage.local.remove([
-        'participant_access_token',
-        'participant_session_id',
-        'student_id',
-        'student_name',
-        'exam_code',
-        'title',
-        'course_name',
-        'session_status',
-        'status',
-      ])
+      // Token expired or invalid — clear stored participant session
+      await chrome.storage.local.remove('proctorai_session')
       throw new Error('Session expired. Please rejoin the exam.')
     }
 
