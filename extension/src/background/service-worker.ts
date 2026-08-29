@@ -1,13 +1,19 @@
 // ProctorAI Background Service Worker
-// Handles browser monitoring: tab-switch and fullscreen-exit detection.
+// Handles browser monitoring: tab-switch and window-state detection.
 //
 // Monitoring runs here (not in popup) because the popup is ephemeral.
 // Armed whenever a valid participant session exists in chrome.storage.local.
 
 import { apiService } from '../services/api'
-import type { ParticipantSession, EventSubmissionRequest } from '../types'
+import type { ParticipantSession, EventSubmissionRequest, EventType } from '../types'
 
 const STORAGE_KEY = 'proctorai_session'
+
+// ---------------------------------------------------------------------------
+// Chrome window state type
+// ---------------------------------------------------------------------------
+
+type ChromeWindowState = 'normal' | 'minimized' | 'maximized' | 'fullscreen'
 
 // ---------------------------------------------------------------------------
 // State
@@ -20,10 +26,13 @@ let lastActiveTabId: number | null = null
 let listenersAttached = false
 
 /**
- * Window fullscreen state tracker.
- * Key: windowId, Value: whether the window was last known to be fullscreen.
+ * Window state tracker.
+ * Key: windowId, Value: the previous Chrome window state.
+ *
+ * Used for detecting transitions between:
+ * normal, minimized, maximized, fullscreen
  */
-const windowFullscreenState = new Map<number, boolean>()
+const windowStateTracker = new Map<number, ChromeWindowState>()
 
 // ---------------------------------------------------------------------------
 // Session helpers
@@ -50,7 +59,7 @@ async function getStoredSession(): Promise<ParticipantSession | null> {
 
 /**
  * Submit a monitoring event using the stored participant token.
- * Silently ignores failures (session missing, backend unavailable, not LIVE).
+ * Silently ignored failures (session missing, backend unavailable, not LIVE).
  * Does not retry.
  */
 async function submitEvent(event: EventSubmissionRequest): Promise<void> {
@@ -137,27 +146,22 @@ function onTabActivated(activeInfo: chrome.tabs.TabActiveInfo): void {
 }
 
 // ---------------------------------------------------------------------------
-// Fullscreen exit detection
+// Window state detection — Phase 5 + 5.1
 // ---------------------------------------------------------------------------
 
 /**
- * Snapshot current fullscreen state for all browser windows.
+ * Snapshot current state for all browser windows.
  *
- * This ensures we only detect a genuine:
- * fullscreen -> non-fullscreen
- *
- * and do not treat a normal browser startup as a fullscreen exit.
+ * This establishes the baseline so we only detect genuine transitions.
+ * Does NOT emit events for the initial snapshot.
  */
 async function initWindowStates(): Promise<void> {
   try {
     const windows = await chrome.windows.getAll()
 
     for (const win of windows) {
-      if (win.id !== undefined) {
-        windowFullscreenState.set(
-          win.id,
-          win.state === 'fullscreen'
-        )
+      if (win.id !== undefined && win.state) {
+        windowStateTracker.set(win.id, win.state as ChromeWindowState)
       }
     }
   } catch {
@@ -166,31 +170,116 @@ async function initWindowStates(): Promise<void> {
 }
 
 /**
- * Detect window state transitions.
+ * Determine the event to emit for a window state transition.
+ *
+ * Transition rules (Phase 5.1):
+ *
+ * A) fullscreen -> non-fullscreen:
+ *    Emit ONLY fullscreen_exit (no other event).
+ *
+ * B) non-minimized -> minimized:
+ *    Emit window_minimized.
+ *
+ * C) non-maximized/non-fullscreen -> maximized:
+ *    Emit window_maximized.
+ *
+ * D) maximized -> normal OR minimized -> normal/maximized:
+ *    Emit window_restored.
+ *    BUT NOT on fullscreen -> X (already covered by A).
+ *
+ * Returns null if no event should be emitted.
+ */
+function resolveTransitionEvent(
+  previousState: ChromeWindowState,
+  currentState: ChromeWindowState
+): EventType | null {
+  // No transition
+  if (previousState === currentState) {
+    return null
+  }
+
+  // Rule A: fullscreen exit
+  if (previousState === 'fullscreen' && currentState !== 'fullscreen') {
+    return 'fullscreen_exit'
+  }
+
+  // Rule B: window minimized
+  if (currentState === 'minimized' && previousState !== 'minimized') {
+    return 'window_minimized'
+  }
+
+  // Rule C: window maximized
+  if (
+  currentState === 'maximized' &&
+  previousState !== 'maximized' &&
+  previousState !== 'fullscreen' &&
+  previousState !== 'minimized'
+) {
+  return 'window_maximized'
+}
+
+  // Rule D: window restored
+  // D1: maximized -> normal
+  if (previousState === 'maximized' && currentState === 'normal') {
+    return 'window_restored'
+  }
+  // D2: minimized -> normal or maximized
+  if (
+    previousState === 'minimized' &&
+    (currentState === 'normal' || currentState === 'maximized')
+  ) {
+    return 'window_restored'
+  }
+
+  // All other transitions — no event
+  return null
+}
+
+/**
+ * Map event type to client_event_id prefix.
+ */
+function eventIdPrefix(eventType: EventType): string {
+  const prefixes: Record<string, string> = {
+    fullscreen_exit: 'fullscreen-exit',
+    window_minimized: 'window-minimized',
+    window_maximized: 'window-maximized',
+    window_restored: 'window-restored',
+  }
+  return prefixes[eventType] || eventType
+}
+
+/**
+ * Detect window state transitions and emit appropriate events.
  */
 function onWindowBoundsChanged(win: chrome.windows.Window): void {
-  if (win.id === undefined) {
+  if (win.id === undefined || !win.state) {
     return
   }
 
   const windowId = win.id
+  const currentState = win.state as ChromeWindowState
+  const previousState = windowStateTracker.get(windowId)
 
-  const wasFullscreen =
-    windowFullscreenState.get(windowId) ?? false
+  // Update tracked state immediately to prevent duplicate emissions
+  // from rapid onBoundsChanged callbacks for the same final state.
+  windowStateTracker.set(windowId, currentState)
 
-  const isFullscreen = win.state === 'fullscreen'
+  // No baseline yet — first observation, don't emit
+  if (previousState === undefined) {
+    return
+  }
 
-  // Update tracked state
-  windowFullscreenState.set(windowId, isFullscreen)
+  const eventType = resolveTransitionEvent(previousState, currentState)
 
-  // Emit only for a genuine fullscreen -> non-fullscreen transition
-  if (wasFullscreen && !isFullscreen) {
+  if (eventType) {
     const event: EventSubmissionRequest = {
-      event_type: 'fullscreen_exit',
-      client_event_id: `fullscreen-exit-${crypto.randomUUID()}`,
+      event_type: eventType,
+      client_event_id: `${eventIdPrefix(eventType)}-${crypto.randomUUID()}`,
       client_occurred_at: new Date().toISOString(),
       metadata: {
         source: 'chrome_window',
+        from_state: previousState,
+        to_state: currentState,
       },
     }
 
@@ -202,7 +291,7 @@ function onWindowBoundsChanged(win: chrome.windows.Window): void {
  * Remove state for closed windows.
  */
 function onWindowRemoved(windowId: number): void {
-  windowFullscreenState.delete(windowId)
+  windowStateTracker.delete(windowId)
 }
 
 // ---------------------------------------------------------------------------
@@ -246,7 +335,7 @@ function detachListeners(): void {
 
   // Reset detector state
   lastActiveTabId = null
-  windowFullscreenState.clear()
+  windowStateTracker.clear()
 
   listenersAttached = false
 

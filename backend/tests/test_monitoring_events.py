@@ -356,6 +356,9 @@ def test_server_severity_mapping(client):
         ("tab_switch", "medium"),
         ("camera_obscured", "medium"),
         ("looking_away", "low"),
+        ("window_minimized", "medium"),
+        ("window_maximized", "low"),
+        ("window_restored", "low"),
     ]:
         resp = submit_event(client, p_token, event_type)
         assert resp.status_code == 201, f"Failed for {event_type}"
@@ -705,5 +708,136 @@ def test_ws_disconnect_cleanup(client, ws_session_local):
         assert event["event"]["event_type"] == "looking_away"
 
 
+# ==================== WINDOW STATE EVENT TESTS (Phase 5.1) ====================
+
+
+# 37. window_minimized accepted with medium severity
+def test_window_minimized_accepted(client):
+    token = register_and_login(client, INSTRUCTOR_A)
+    sid, exam_code = create_session_in_status(client, token, "live")
+    p_token, _ = get_participant_token(client, exam_code)
+
+    resp = submit_event(
+        client,
+        p_token,
+        "window_minimized",
+        client_event_id="window-minimized-test-1",
+        metadata={"source": "chrome_window", "from_state": "normal", "to_state": "minimized"},
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["event_type"] == "window_minimized"
+    assert data["severity"] == "medium"
+    assert data["client_event_id"] == "window-minimized-test-1"
+    assert data["metadata"]["from_state"] == "normal"
+    assert data["metadata"]["to_state"] == "minimized"
+
+
+# 38. window_maximized accepted with low severity
+def test_window_maximized_accepted(client):
+    token = register_and_login(client, INSTRUCTOR_A)
+    sid, exam_code = create_session_in_status(client, token, "live")
+    p_token, _ = get_participant_token(client, exam_code)
+
+    resp = submit_event(
+        client,
+        p_token,
+        "window_maximized",
+        client_event_id="window-maximized-test-1",
+        metadata={"source": "chrome_window", "from_state": "normal", "to_state": "maximized"},
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["event_type"] == "window_maximized"
+    assert data["severity"] == "low"
+    assert data["client_event_id"] == "window-maximized-test-1"
+
+
+# 39. window_restored accepted with low severity
+def test_window_restored_accepted(client):
+    token = register_and_login(client, INSTRUCTOR_A)
+    sid, exam_code = create_session_in_status(client, token, "live")
+    p_token, _ = get_participant_token(client, exam_code)
+
+    resp = submit_event(
+        client,
+        p_token,
+        "window_restored",
+        client_event_id="window-restored-test-1",
+        metadata={"source": "chrome_window", "from_state": "minimized", "to_state": "normal"},
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["event_type"] == "window_restored"
+    assert data["severity"] == "low"
+    assert data["client_event_id"] == "window-restored-test-1"
+
+
+# 40. server still owns severity — client cannot override for window state events
+def test_window_state_severity_server_owned(client):
+    token = register_and_login(client, INSTRUCTOR_A)
+    sid, exam_code = create_session_in_status(client, token, "live")
+    p_token, _ = get_participant_token(client, exam_code)
+
+    # Attempt to send severity from client — must be rejected (extra=forbid)
+    resp = client.post(
+        "/api/participant-sessions/events",
+        json={"event_type": "window_minimized", "severity": "high"},
+        headers={"Authorization": f"Bearer {p_token}"},
+    )
+    assert resp.status_code == 422
+
+
+# 41. window state events appear in instructor event history
+def test_window_state_events_in_history(client):
+    token = register_and_login(client, INSTRUCTOR_A)
+    sid, exam_code = create_session_in_status(client, token, "live")
+    p_token, _ = get_participant_token(client, exam_code)
+
+    submit_event(client, p_token, "window_minimized", client_event_id="wm-1")
+    submit_event(client, p_token, "window_maximized", client_event_id="wx-1")
+    submit_event(client, p_token, "window_restored", client_event_id="wr-1")
+
+    events_resp = client.get(
+        f"/api/monitoring-sessions/{sid}/events", headers=auth_headers(token)
+    )
+    events = events_resp.json()["events"]
+    assert len(events) == 3
+    event_types = {e["event_type"] for e in events}
+    assert event_types == {"window_minimized", "window_maximized", "window_restored"}
+
+
+# 42. window state event idempotency works
+def test_window_state_event_idempotency(client):
+    token = register_and_login(client, INSTRUCTOR_A)
+    sid, exam_code = create_session_in_status(client, token, "live")
+    p_token, _ = get_participant_token(client, exam_code)
+
+    client_eid = "window-min-dup-test"
+    resp1 = submit_event(client, p_token, "window_minimized", client_event_id=client_eid)
+    resp2 = submit_event(client, p_token, "window_minimized", client_event_id=client_eid)
+
+    assert resp1.status_code == 201
+    assert resp2.status_code == 201
+    assert resp1.json()["event_id"] == resp2.json()["event_id"]
+
+    # Only one event in database
+    events_resp = client.get(
+        f"/api/monitoring-sessions/{sid}/events", headers=auth_headers(token)
+    )
+    assert len(events_resp.json()["events"]) == 1
+
+
+# 43. existing event types still work after Phase 5.1 additions
+def test_existing_event_types_still_work(client):
+    token = register_and_login(client, INSTRUCTOR_A)
+    sid, exam_code = create_session_in_status(client, token, "live")
+    p_token, _ = get_participant_token(client, exam_code)
+
+    for event_type in ["tab_switch", "fullscreen_exit", "looking_away", "phone_detected"]:
+        resp = submit_event(client, p_token, event_type, client_event_id=f"regression-{event_type}")
+        assert resp.status_code == 201, f"Regression: {event_type} no longer accepted"
+
+
 # ==================== REGRESSION TESTS ====================
-# 37-39. Existing tests still pass — verified by running full test suite
+# Verified by running full test suite

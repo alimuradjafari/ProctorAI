@@ -88,11 +88,16 @@ ProctorAI/
 
 ## Current Development Status
 
-**Phase 5 — Browser Monitoring (Tab Switch + Fullscreen Exit)** (current)
+**Phase 5.1 — Window State Monitoring (Minimize/Maximize/Restore)** (current)
 
 This phase provides:
 - Automatic tab-switch detection via Chrome `tabs.onActivated` in background service worker
-- Automatic fullscreen-exit detection via Chrome `windows.onBoundsChanged` with state tracking
+- Full window state machine: `normal`, `minimized`, `maximized`, `fullscreen`
+- `fullscreen_exit` detection (fullscreen → non-fullscreen)
+- `window_minimized` detection (non-minimized → minimized)
+- `window_maximized` detection (non-maximized/non-fullscreen → maximized)
+- `window_restored` detection (maximized → normal, minimized → normal/maximized)
+- Baseline state snapshot via `chrome.windows.getAll()` — no events from initial state
 - Monitoring armed/disarmed based on participant session presence in `chrome.storage.local`
 - Unique `client_event_id` per event using `crypto.randomUUID()` for transport idempotency
 - Graceful error handling: no crashes, no infinite retries on backend failures
@@ -231,7 +236,8 @@ Load the extension in Chrome:
 | 2B | Monitoring sessions + exam IDs + roster | ✅ Complete |
 | 3 | Extension join flow + participant sessions | ✅ Complete |
 | 4 | Real-time event routing + WebSockets | ✅ Complete |
-| 5 | Browser monitoring (tab/fullscreen) | ✅ Current |
+| 5 | Browser monitoring (tab/fullscreen) | ✅ Complete |
+| 5.1 | Window state monitoring (min/max/restore) | ✅ Current |
 | 6 | Camera + face detection | Planned |
 | 7 | Phone + object detection | Planned |
 | 8 | Gaze + camera-obscured detection | Planned |

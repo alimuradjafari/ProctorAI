@@ -61,6 +61,9 @@ export type EventType =
   | 'tab_switch'
   | 'camera_obscured'
   | 'looking_away'
+  | 'window_minimized'
+  | 'window_maximized'
+  | 'window_restored'
 
 export type Severity = 'low' | 'medium' | 'high'
 
