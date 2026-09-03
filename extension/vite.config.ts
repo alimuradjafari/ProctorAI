@@ -7,7 +7,15 @@ export default defineConfig({
   plugins: [
     react(),
     viteStaticCopy({
-      targets: [{ src: 'public/*', dest: '.' }],
+      targets: [
+        // Copy public/* to dist root (manifest, popup.html, models/, etc.)
+        { src: 'public/*', dest: '.' },
+        // Copy MediaPipe WASM files to dist/wasm/
+        {
+          src: 'node_modules/@mediapipe/tasks-vision/wasm/*',
+          dest: 'wasm',
+        },
+      ],
     }),
   ],
   build: {
@@ -17,6 +25,8 @@ export default defineConfig({
       input: {
         popup: resolve(__dirname, 'src/popup/popup.tsx'),
         background: resolve(__dirname, 'src/background/service-worker.ts'),
+        offscreen: resolve(__dirname, 'src/offscreen/offscreen.ts'),
+        'camera-permission': resolve(__dirname, 'src/camera-permission/camera-permission.tsx'),
       },
       output: {
         entryFileNames: '[name].js',

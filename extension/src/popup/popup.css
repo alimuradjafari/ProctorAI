@@ -216,3 +216,81 @@ h1 {
   font-size: 12px;
   color: #dc2626;
 }
+
+/* Camera monitoring section (Phase 6) */
+.camera-section {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.camera-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 8px;
+}
+
+.camera-status-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.camera-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.camera-status-dot.inactive { background: #9ca3af; }
+.camera-status-dot.starting { background: #f59e0b; }
+.camera-status-dot.active   { background: #22c55e; }
+.camera-status-dot.denied   { background: #dc2626; }
+.camera-status-dot.error    { background: #dc2626; }
+.camera-status-dot.waiting  { background: #9ca3af; }
+
+.camera-status-text {
+  font-size: 12px;
+  color: #4b5563;
+}
+
+.camera-btn {
+  width: 100%;
+  padding: 8px;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.camera-btn.enable {
+  background: #2563eb;
+  color: white;
+}
+
+.camera-btn.enable:hover {
+  background: #1d4ed8;
+}
+
+.camera-btn.disable {
+  background: #fef2f2;
+  color: #dc2626;
+  border: 1px solid #fecaca;
+}
+
+.camera-btn.disable:hover {
+  background: #fee2e2;
+}
+
+.camera-btn:disabled {
+  background: #e5e7eb;
+  color: #9ca3af;
+  cursor: not-allowed;
+}

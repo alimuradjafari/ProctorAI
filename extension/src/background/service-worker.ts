@@ -1,13 +1,15 @@
 // ProctorAI Background Service Worker
-// Handles browser monitoring: tab-switch and window-state detection.
+// Handles browser monitoring: tab-switch, window-state, and camera face detection.
 //
 // Monitoring runs here (not in popup) because the popup is ephemeral.
 // Armed whenever a valid participant session exists in chrome.storage.local.
+// Camera processing runs in a separate MV3 offscreen document.
 
 import { apiService } from '../services/api'
 import type { ParticipantSession, EventSubmissionRequest, EventType } from '../types'
 
 const STORAGE_KEY = 'proctorai_session'
+const CAMERA_ENABLED_KEY = 'camera_monitoring_enabled'
 
 // ---------------------------------------------------------------------------
 // Chrome window state type
@@ -28,11 +30,11 @@ let listenersAttached = false
 /**
  * Window state tracker.
  * Key: windowId, Value: the previous Chrome window state.
- *
- * Used for detecting transitions between:
- * normal, minimized, maximized, fullscreen
  */
 const windowStateTracker = new Map<number, ChromeWindowState>()
+
+/** Guard to prevent concurrent offscreen document creation. */
+let offscreenCreationPromise: Promise<void> | null = null
 
 // ---------------------------------------------------------------------------
 // Session helpers
@@ -59,7 +61,7 @@ async function getStoredSession(): Promise<ParticipantSession | null> {
 
 /**
  * Submit a monitoring event using the stored participant token.
- * Silently ignored failures (session missing, backend unavailable, not LIVE).
+ * Silently ignores failures (session missing, backend unavailable, not LIVE).
  * Does not retry.
  */
 async function submitEvent(event: EventSubmissionRequest): Promise<void> {
@@ -93,12 +95,6 @@ async function submitEvent(event: EventSubmissionRequest): Promise<void> {
 // Tab switch detection
 // ---------------------------------------------------------------------------
 
-/**
- * Snapshot the currently active tab when monitoring starts.
- *
- * This prevents us from blindly ignoring the first real tab switch after
- * a Manifest V3 service worker restart.
- */
 async function initActiveTab(): Promise<void> {
   try {
     const tabs = await chrome.tabs.query({
@@ -116,17 +112,7 @@ async function initActiveTab(): Promise<void> {
   }
 }
 
-/**
- * Detect active-tab changes.
- *
- * We do not read or transmit:
- * - URL
- * - page title
- * - hostname
- * - browsing history
- */
 function onTabActivated(activeInfo: chrome.tabs.TabActiveInfo): void {
-  // Avoid duplicate for the same tab activation
   if (activeInfo.tabId === lastActiveTabId) {
     return
   }
@@ -149,12 +135,6 @@ function onTabActivated(activeInfo: chrome.tabs.TabActiveInfo): void {
 // Window state detection — Phase 5 + 5.1
 // ---------------------------------------------------------------------------
 
-/**
- * Snapshot current state for all browser windows.
- *
- * This establishes the baseline so we only detect genuine transitions.
- * Does NOT emit events for the initial snapshot.
- */
 async function initWindowStates(): Promise<void> {
   try {
     const windows = await chrome.windows.getAll()
@@ -169,31 +149,10 @@ async function initWindowStates(): Promise<void> {
   }
 }
 
-/**
- * Determine the event to emit for a window state transition.
- *
- * Transition rules (Phase 5.1):
- *
- * A) fullscreen -> non-fullscreen:
- *    Emit ONLY fullscreen_exit (no other event).
- *
- * B) non-minimized -> minimized:
- *    Emit window_minimized.
- *
- * C) non-maximized/non-fullscreen -> maximized:
- *    Emit window_maximized.
- *
- * D) maximized -> normal OR minimized -> normal/maximized:
- *    Emit window_restored.
- *    BUT NOT on fullscreen -> X (already covered by A).
- *
- * Returns null if no event should be emitted.
- */
 function resolveTransitionEvent(
   previousState: ChromeWindowState,
   currentState: ChromeWindowState
 ): EventType | null {
-  // No transition
   if (previousState === currentState) {
     return null
   }
@@ -208,15 +167,15 @@ function resolveTransitionEvent(
     return 'window_minimized'
   }
 
-  // Rule C: window maximized
+  // Rule C: window maximized (not from minimized, not from fullscreen)
   if (
-  currentState === 'maximized' &&
-  previousState !== 'maximized' &&
-  previousState !== 'fullscreen' &&
-  previousState !== 'minimized'
-) {
-  return 'window_maximized'
-}
+    currentState === 'maximized' &&
+    previousState !== 'maximized' &&
+    previousState !== 'fullscreen' &&
+    previousState !== 'minimized'
+  ) {
+    return 'window_maximized'
+  }
 
   // Rule D: window restored
   // D1: maximized -> normal
@@ -235,9 +194,6 @@ function resolveTransitionEvent(
   return null
 }
 
-/**
- * Map event type to client_event_id prefix.
- */
 function eventIdPrefix(eventType: EventType): string {
   const prefixes: Record<string, string> = {
     fullscreen_exit: 'fullscreen-exit',
@@ -248,9 +204,6 @@ function eventIdPrefix(eventType: EventType): string {
   return prefixes[eventType] || eventType
 }
 
-/**
- * Detect window state transitions and emit appropriate events.
- */
 function onWindowBoundsChanged(win: chrome.windows.Window): void {
   if (win.id === undefined || !win.state) {
     return
@@ -260,11 +213,8 @@ function onWindowBoundsChanged(win: chrome.windows.Window): void {
   const currentState = win.state as ChromeWindowState
   const previousState = windowStateTracker.get(windowId)
 
-  // Update tracked state immediately to prevent duplicate emissions
-  // from rapid onBoundsChanged callbacks for the same final state.
   windowStateTracker.set(windowId, currentState)
 
-  // No baseline yet — first observation, don't emit
   if (previousState === undefined) {
     return
   }
@@ -287,21 +237,227 @@ function onWindowBoundsChanged(win: chrome.windows.Window): void {
   }
 }
 
-/**
- * Remove state for closed windows.
- */
 function onWindowRemoved(windowId: number): void {
   windowStateTracker.delete(windowId)
+}
+
+// ---------------------------------------------------------------------------
+// Offscreen document lifecycle (Phase 6 — Camera)
+// ---------------------------------------------------------------------------
+
+/**
+ * Ensure the offscreen document exists, creating it if needed.
+ * Uses a module-level Promise guard to prevent concurrent creation.
+ */
+async function ensureOffscreenDocument(): Promise<void> {
+  // Serialize concurrent callers
+  if (offscreenCreationPromise) {
+    await offscreenCreationPromise
+    return
+  }
+
+  offscreenCreationPromise = ensureOffscreenDocumentInner()
+  try {
+    await offscreenCreationPromise
+  } finally {
+    offscreenCreationPromise = null
+  }
+}
+
+async function ensureOffscreenDocumentInner(): Promise<void> {
+  try {
+    // Check if offscreen already exists via getContexts (Chrome 116+)
+    const contexts = await chrome.runtime.getContexts({
+      contextTypes: ['OFFSCREEN_DOCUMENT' as chrome.runtime.ContextType],
+    })
+
+    if (contexts.length > 0) {
+      return // Already running
+    }
+  } catch {
+    // getContexts may not be available — proceed to create
+  }
+
+  await chrome.offscreen.createDocument({
+    url: 'offscreen.html',
+    reasons: ['USER_MEDIA' as chrome.offscreen.Reason],
+    justification: 'Local webcam face-presence monitoring during an active proctored session.',
+  })
+
+  console.log('[ProctorAI] Offscreen document created')
+}
+
+/**
+ * Close the offscreen document if it exists.
+ */
+async function closeOffscreenDocument(): Promise<void> {
+  try {
+    const contexts = await chrome.runtime.getContexts({
+      contextTypes: ['OFFSCREEN_DOCUMENT' as chrome.runtime.ContextType],
+    })
+
+    if (contexts.length > 0) {
+      await chrome.offscreen.closeDocument()
+      console.log('[ProctorAI] Offscreen document closed')
+    }
+  } catch {
+    // Already closed or not available
+  }
+}
+
+/**
+ * Start camera monitoring by ensuring the offscreen document exists
+ * and sending it a START command.
+ */
+async function startCameraMonitoring(): Promise<void> {
+  await ensureOffscreenDocument()
+
+  // Small delay to let the offscreen document initialize
+  await new Promise(resolve => setTimeout(resolve, 500))
+
+  chrome.runtime.sendMessage({
+    target: 'offscreen',
+    type: 'START_CAMERA_MONITORING',
+  }).catch(() => {
+    // Offscreen may not be ready yet
+  })
+
+  // Persist camera monitoring state for SW restart recovery
+  await chrome.storage.local.set({ [CAMERA_ENABLED_KEY]: true })
+}
+
+/**
+ * Stop camera monitoring — tells offscreen to stop and close.
+ */
+async function stopCameraMonitoring(): Promise<void> {
+  try {
+    await chrome.runtime.sendMessage({
+      target: 'offscreen',
+      type: 'STOP_CAMERA_MONITORING',
+    })
+  } catch {
+    // Offscreen may already be gone
+  }
+
+  await closeOffscreenDocument()
+  await chrome.storage.local.set({ [CAMERA_ENABLED_KEY]: false })
+}
+
+/**
+ * Check if the participant session is still LIVE.
+ * Called when the offscreen document asks for a status check.
+ */
+async function checkSessionStatus(): Promise<void> {
+  const session = await getStoredSession()
+
+  if (!session) {
+    // Session gone — stop camera
+    await stopCameraMonitoring()
+    return
+  }
+
+  try {
+    const me = await apiService.getParticipantMe(session.participant_access_token)
+
+    // Relay status back to offscreen
+    chrome.runtime.sendMessage({
+      target: 'offscreen',
+      type: 'SESSION_STATUS_RESULT',
+      status: me.session_status,
+    }).catch(() => { /* offscreen may have closed */ })
+
+    // If session ended/cancelled, stop camera
+    if (me.session_status === 'ended' || me.session_status === 'cancelled') {
+      await stopCameraMonitoring()
+    }
+  } catch {
+    // Backend unreachable — don't destroy camera session
+    // Will retry on next interval
+    console.debug('[ProctorAI] Session status check failed — will retry')
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Camera permission page coordination
+// ---------------------------------------------------------------------------
+
+/**
+ * Open the camera-permission page in a new tab.
+ * Requires a stored participant session with LIVE status.
+ */
+async function openCameraPermissionPage(): Promise<{ success: boolean; error?: string }> {
+  const session = await getStoredSession()
+
+  if (!session) {
+    return { success: false, error: 'No active session' }
+  }
+
+  try {
+    const me = await apiService.getParticipantMe(session.participant_access_token)
+
+    if (me.session_status !== 'live') {
+      return { success: false, error: `Session is ${me.session_status}, not live` }
+    }
+  } catch {
+    return { success: false, error: 'Unable to verify session status' }
+  }
+
+  // chrome.tabs.create does NOT require the "tabs" permission
+  // (tabs permission only grants access to tab URLs/titles)
+  const permissionUrl = chrome.runtime.getURL('camera-permission.html')
+  await chrome.tabs.create({ url: permissionUrl })
+
+  console.log('[ProctorAI] Camera permission page opened')
+  return { success: true }
+}
+
+/**
+ * Called when the camera-permission page reports success.
+ * Re-validates session is LIVE, then starts the existing offscreen camera path.
+ */
+async function handleCameraPermissionGranted(): Promise<void> {
+  const session = await getStoredSession()
+
+  if (!session) {
+    console.warn('[ProctorAI] CAMERA_PERMISSION_GRANTED but no stored session')
+    return
+  }
+
+  try {
+    const me = await apiService.getParticipantMe(session.participant_access_token)
+
+    if (me.session_status !== 'live') {
+      console.log(`[ProctorAI] Session is ${me.session_status} — not starting camera after permission`)
+      await chrome.storage.local.set({ camera_status: 'inactive' })
+      return
+    }
+  } catch {
+    console.warn('[ProctorAI] Cannot verify session after camera permission — not starting camera')
+    await chrome.storage.local.set({ camera_status: 'error' })
+    return
+  }
+
+  // Session is LIVE and permission was granted — start offscreen monitoring
+  console.log('[ProctorAI] Camera permission granted — starting offscreen monitoring')
+  await startCameraMonitoring()
+}
+
+/**
+ * Called when the camera-permission page reports failure.
+ * Ensures camera_monitoring_enabled stays false and updates status.
+ */
+async function handleCameraPermissionFailed(reason: string): Promise<void> {
+  console.log(`[ProctorAI] Camera permission failed: ${reason}`)
+
+  const status = reason === 'denied' ? 'denied' : 'error'
+  await chrome.storage.local.set({ camera_status: status })
+  await chrome.storage.local.set({ [CAMERA_ENABLED_KEY]: false })
 }
 
 // ---------------------------------------------------------------------------
 // Monitoring lifecycle
 // ---------------------------------------------------------------------------
 
-/**
- * Attach monitoring listeners.
- * Safe to call multiple times — listeners are only attached once.
- */
 function attachListeners(): void {
   if (listenersAttached) {
     return
@@ -311,7 +467,6 @@ function attachListeners(): void {
   chrome.windows.onBoundsChanged.addListener(onWindowBoundsChanged)
   chrome.windows.onRemoved.addListener(onWindowRemoved)
 
-  // Initialize detector baselines
   void initActiveTab()
   void initWindowStates()
 
@@ -320,10 +475,6 @@ function attachListeners(): void {
   console.log('[ProctorAI] Monitoring listeners attached')
 }
 
-/**
- * Detach monitoring listeners.
- * Called when participant session is removed from storage.
- */
 function detachListeners(): void {
   if (!listenersAttached) {
     return
@@ -333,7 +484,6 @@ function detachListeners(): void {
   chrome.windows.onBoundsChanged.removeListener(onWindowBoundsChanged)
   chrome.windows.onRemoved.removeListener(onWindowRemoved)
 
-  // Reset detector state
   lastActiveTabId = null
   windowStateTracker.clear()
 
@@ -344,7 +494,6 @@ function detachListeners(): void {
 
 // ---------------------------------------------------------------------------
 // Storage change listener
-// Arm/disarm monitoring based on participant session presence
 // ---------------------------------------------------------------------------
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -354,17 +503,16 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 
   const sessionChange = changes[STORAGE_KEY]
 
-  if (!sessionChange) {
-    return
-  }
+  if (sessionChange) {
+    const newValue = sessionChange.newValue as ParticipantSession | undefined
 
-  const newValue =
-    sessionChange.newValue as ParticipantSession | undefined
-
-  if (newValue?.participant_access_token) {
-    attachListeners()
-  } else {
-    detachListeners()
+    if (newValue?.participant_access_token) {
+      attachListeners()
+    } else {
+      detachListeners()
+      // Session removed — also stop camera
+      void stopCameraMonitoring()
+    }
   }
 })
 
@@ -382,24 +530,120 @@ chrome.runtime.onInstalled.addListener((details) => {
 
 /**
  * Manifest V3 service workers may restart.
- * If a participant session already exists, re-arm monitoring.
+ * Re-arm browser monitoring if participant session exists.
+ *
+ * Camera recovery requires:
+ * 1. Stored participant session/token exists
+ * 2. camera_monitoring_enabled flag is true
+ * 3. Backend confirms session_status === 'live' via /me endpoint
+ *
+ * If backend is unreachable or session is not LIVE, do NOT reopen camera.
  */
-void getStoredSession().then((session) => {
+void (async () => {
+  const session = await getStoredSession()
   if (session) {
     attachListeners()
+
+    // Check if camera monitoring was previously enabled
+    const result = await chrome.storage.local.get(CAMERA_ENABLED_KEY)
+    if (result[CAMERA_ENABLED_KEY]) {
+      // Verify session is still LIVE before recovering camera
+      try {
+        const me = await apiService.getParticipantMe(session.participant_access_token)
+
+        if (me.session_status === 'live') {
+          console.log('[ProctorAI] Recovering camera monitoring after SW restart')
+          void startCameraMonitoring()
+        } else {
+          console.log(`[ProctorAI] Session is ${me.session_status} — not recovering camera`)
+          await chrome.storage.local.set({ [CAMERA_ENABLED_KEY]: false })
+        }
+      } catch {
+        // Backend unreachable — do NOT blindly reopen camera
+        console.log('[ProctorAI] Backend unreachable during SW restart — deferring camera recovery')
+      }
+    }
   }
-})
+})()
 
 // ---------------------------------------------------------------------------
-// Messages from popup
+// Message router
 // ---------------------------------------------------------------------------
 
 chrome.runtime.onMessage.addListener(
   (message, _sender, sendResponse) => {
+    // ---- Popup messages ----
     if (message.type === 'GET_STATUS') {
       sendResponse({
         status: listenersAttached ? 'monitoring' : 'idle',
       })
+    }
+
+    else if (message.type === 'REQUEST_CAMERA_PERMISSION') {
+      // Popup asks to open the camera-permission page
+      void openCameraPermissionPage().then((result) => sendResponse(result))
+      return true // async sendResponse
+    }
+
+    else if (message.type === 'CAMERA_PERMISSION_GRANTED') {
+      // Permission page reports success
+      void handleCameraPermissionGranted()
+      sendResponse({ ok: true })
+    }
+
+    else if (message.type === 'CAMERA_PERMISSION_FAILED') {
+      // Permission page reports failure
+      void handleCameraPermissionFailed(message.reason || 'error')
+      sendResponse({ ok: true })
+    }
+
+    else if (message.type === 'START_CAMERA') {
+      void startCameraMonitoring()
+      sendResponse({ ok: true })
+    }
+
+    else if (message.type === 'STOP_CAMERA') {
+      void stopCameraMonitoring()
+      sendResponse({ ok: true })
+    }
+
+    // ---- Offscreen document messages ----
+    else if (message.target === 'service-worker') {
+      if (message.type === 'FACE_MONITORING_EVENT') {
+        // Whitelist: only no_face and multiple_faces are valid camera events.
+        // Reject severity, monitoring_session_id, instructor_id, etc.
+        const event = message.event
+        if (
+          event &&
+          typeof event.event_type === 'string' &&
+          (event.event_type === 'no_face' || event.event_type === 'multiple_faces')
+        ) {
+          void submitEvent({
+            event_type: event.event_type,
+            client_event_id: event.client_event_id,
+            client_occurred_at: event.client_occurred_at,
+            metadata: event.metadata,
+          })
+        }
+      }
+
+      else if (message.type === 'CAMERA_STATUS_UPDATE') {
+        // Store camera status so popup can read it
+        void chrome.storage.local.set({ camera_status: message.status })
+
+        // Clear enabled flag on failure or inactive states
+        if (
+          message.status === 'denied' ||
+          message.status === 'error' ||
+          message.status === 'inactive'
+        ) {
+          void chrome.storage.local.set({ [CAMERA_ENABLED_KEY]: false })
+        }
+      }
+
+      else if (message.type === 'CHECK_MONITORING_SESSION_STATUS') {
+        void checkSessionStatus()
+      }
     }
 
     return true
