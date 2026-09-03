@@ -169,6 +169,7 @@ class MonitoringEventService:
             "event": response_data,
             "is_duplicate": False,
             "monitoring_session_id": monitoring_session.id,
+            "_participant_internal_id": participant.id,
         }
 
     def list_events(
@@ -210,7 +211,7 @@ class MonitoringEventService:
 
 
 async def broadcast_event(result: dict) -> None:
-    """Broadcast a committed event to authenticated instructor WebSocket clients.
+    """Broadcast a committed event and the participant's updated risk snapshot.
 
     Call ONLY after successful commit — never broadcast uncommitted events.
     """
@@ -220,7 +221,8 @@ async def broadcast_event(result: dict) -> None:
     event_data = result["event"]
     monitoring_session_id = result["monitoring_session_id"]
 
-    message = {
+    # 1. Broadcast the monitoring event (existing behavior)
+    event_message = {
         "type": "monitoring_event",
         "event": {
             "event_id": event_data["event_id"],
@@ -239,4 +241,29 @@ async def broadcast_event(result: dict) -> None:
         },
     }
 
-    await ws_manager.broadcast_to_session(monitoring_session_id, message)
+    await ws_manager.broadcast_to_session(monitoring_session_id, event_message)
+
+    # 2. Broadcast participant risk update (Phase 9)
+    participant_internal_id = result.get("_participant_internal_id")
+    if participant_internal_id is not None:
+        try:
+            from app.services.risk_service import compute_participant_risk_for_broadcast
+            from app.core.database import SessionLocal
+
+            db = SessionLocal()
+            try:
+                risk_payload = compute_participant_risk_for_broadcast(
+                    db, participant_internal_id
+                )
+                if risk_payload:
+                    await ws_manager.broadcast_to_session(
+                        monitoring_session_id, risk_payload
+                    )
+            finally:
+                db.close()
+        except Exception:
+            # Risk broadcast failure must not break event delivery
+            import logging
+            logging.getLogger(__name__).debug(
+                "Risk broadcast failed (non-critical)", exc_info=True
+            )

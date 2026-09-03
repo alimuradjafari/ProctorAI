@@ -6,6 +6,7 @@ import type {
   JoinMode,
   Participant,
   MonitoringEvent,
+  ParticipantRiskSnapshot,
 } from '../types/monitoring'
 
 const BASE = '/monitoring-sessions'
@@ -97,6 +98,15 @@ export async function listParticipants(sessionId: number): Promise<Participant[]
 export async function listEvents(sessionId: number, limit = 100): Promise<MonitoringEvent[]> {
   const data = await apiClient.get<{ events: MonitoringEvent[] }>(`${BASE}/${sessionId}/events?limit=${limit}`)
   return data.events
+}
+
+// --- Risk (Phase 9) ---
+
+export async function getSessionRisk(sessionId: number): Promise<ParticipantRiskSnapshot[]> {
+  const data = await apiClient.get<{ participants: ParticipantRiskSnapshot[] }>(
+    `${BASE}/${sessionId}/risk`
+  )
+  return data.participants
 }
 
 // WebSocket base URL for monitoring events (derived from API base)

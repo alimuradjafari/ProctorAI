@@ -72,3 +72,33 @@ export interface MonitoringEvent {
 }
 
 export type WsConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error'
+
+// Risk Scoring (Phase 9)
+export type RiskLevel = 'normal' | 'low' | 'medium' | 'high' | 'critical'
+
+export interface EventTypeCount {
+  event_type: string
+  count: number
+}
+
+export interface ParticipantRiskSnapshot {
+  participant_session_id: string
+  student_id: string
+  student_name: string
+  risk_score: number
+  risk_level: RiskLevel
+  total_events: number
+  high_severity_events: number
+  medium_severity_events: number
+  low_severity_events: number
+  recent_event_count: number
+  top_event_types: EventTypeCount[]
+}
+
+export interface ParticipantRiskWsPayload {
+  type: 'participant_risk_updated'
+  participant_session_id: string
+  risk_score: number
+  risk_level: RiskLevel
+  total_events: number
+}

@@ -1358,9 +1358,9 @@ function analyzeFrameStats(rgba: Uint8ClampedArray): FrameStatsInput {
     }
   }
 
-const meanLuminance = sumLum / pixelCount
-const variance = sumLumSq / pixelCount - meanLuminance * meanLuminance
-const luminanceStddev = Math.sqrt(Math.max(0, variance))
+  const meanLuminance = sumLum / pixelCount
+  const variance = sumLumSq / pixelCount - meanLuminance * meanLuminance
+  const luminanceStddev = Math.sqrt(Math.max(0, variance))
 
   return {
     meanLuminance,

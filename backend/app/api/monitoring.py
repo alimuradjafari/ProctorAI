@@ -304,6 +304,56 @@ def list_participants(
         )
 
 
+# --- Risk Endpoint (Phase 9) ---
+
+
+@router.get("/{session_id}/risk")
+def get_session_risk(
+    session_id: int,
+    instructor: dict = Depends(get_current_instructor),
+    db: Session = Depends(get_db),
+):
+    """Return risk snapshots for all participants in a monitoring session.
+
+    - Instructor JWT required.
+    - Instructor must own the monitoring session.
+    - Participant tokens cannot access this endpoint.
+    - Default ordering: risk_score DESC, student_name ASC.
+    """
+    from app.services.risk_service import RiskService
+
+    service = RiskService(db)
+    try:
+        snapshots = service.get_session_risk(session_id, instructor["id"])
+        return {"participants": snapshots}
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(e)
+        )
+
+
+@router.get("/{session_id}/participants/{participant_session_id}/risk")
+def get_participant_risk(
+    session_id: int,
+    participant_session_id: str,
+    instructor: dict = Depends(get_current_instructor),
+    db: Session = Depends(get_db),
+):
+    """Return a single participant's risk snapshot."""
+    from app.services.risk_service import RiskService
+
+    service = RiskService(db)
+    try:
+        snapshot = service.get_participant_risk(
+            session_id, participant_session_id, instructor["id"]
+        )
+        return snapshot
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(e)
+        )
+
+
 # --- Events Endpoint ---
 
 

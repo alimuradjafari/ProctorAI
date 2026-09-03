@@ -13,6 +13,7 @@ import {
   deleteSession,
   listParticipants,
   listEvents,
+  getSessionRisk,
   WS_BASE_URL,
 } from '../services/monitoring'
 import type {
@@ -22,6 +23,8 @@ import type {
   Participant,
   MonitoringEvent,
   WsConnectionState,
+  ParticipantRiskSnapshot,
+  ParticipantRiskWsPayload,
 } from '../types/monitoring'
 
 const STATUS_COLORS: Record<string, string> = {
@@ -70,11 +73,15 @@ function SessionDetail() {
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const eventsRef = useRef<MonitoringEvent[]>([])
 
+  // Risk state (Phase 9)
+  const [riskSnapshots, setRiskSnapshots] = useState<ParticipantRiskSnapshot[]>([])
+
   useEffect(() => {
     loadSession()
     loadRoster()
     loadParticipants()
     loadEvents()
+    loadRisk()
   }, [sessionId])
 
   // WebSocket connection effect
@@ -133,6 +140,26 @@ function SessionDetail() {
             const updated = [newEvent, ...prev]
             return updated.slice(0, 200)
           })
+        } else if (data.type === 'participant_risk_updated') {
+          // Phase 9: update matching participant's risk in real-time
+          const update = data as ParticipantRiskWsPayload
+          setRiskSnapshots((prev) => {
+            const idx = prev.findIndex(
+              (s) => s.participant_session_id === update.participant_session_id
+            )
+            if (idx >= 0) {
+              const updated = [...prev]
+              updated[idx] = {
+                ...updated[idx],
+                risk_score: update.risk_score,
+                risk_level: update.risk_level,
+                total_events: update.total_events,
+              }
+              // Re-sort by risk score DESC
+              return updated.sort((a, b) => b.risk_score - a.risk_score || a.student_name.localeCompare(b.student_name))
+            }
+            return prev
+          })
         }
       } catch {
         // Ignore parse errors
@@ -165,6 +192,15 @@ function SessionDetail() {
       eventsRef.current = data
     } catch {
       // Events load failure is non-critical
+    }
+  }
+
+  async function loadRisk() {
+    try {
+      const data = await getSessionRisk(sessionId)
+      setRiskSnapshots(data)
+    } catch {
+      // Risk load failure is non-critical
     }
   }
 
@@ -580,6 +616,81 @@ function SessionDetail() {
         )}
       </div>
 
+      {/* Risk Summary Cards (Phase 9) */}
+      {riskSnapshots.length > 0 && (
+        <div className="grid grid-cols-4 gap-4 mt-6">
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+            <div className="text-sm text-gray-500">Participants</div>
+            <div className="text-2xl font-bold text-gray-900">{riskSnapshots.length}</div>
+          </div>
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+            <div className="text-sm text-gray-500">High Risk</div>
+            <div className="text-2xl font-bold text-orange-600">
+              {riskSnapshots.filter((r) => r.risk_level === 'high').length}
+            </div>
+          </div>
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+            <div className="text-sm text-gray-500">Critical Risk</div>
+            <div className="text-2xl font-bold text-red-600">
+              {riskSnapshots.filter((r) => r.risk_level === 'critical').length}
+            </div>
+          </div>
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+            <div className="text-sm text-gray-500">Total Events</div>
+            <div className="text-2xl font-bold text-gray-900">
+              {riskSnapshots.reduce((sum, r) => sum + r.total_events, 0)}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Participant Risk Table (Phase 9) */}
+      {riskSnapshots.length > 0 && (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mt-6">
+          <h2 className="text-lg font-semibold text-gray-900 mb-4">Monitoring Risk</h2>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-200">
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Student</th>
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Student ID</th>
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Risk Score</th>
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Risk Level</th>
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Events</th>
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">High</th>
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Top Signal</th>
+                </tr>
+              </thead>
+              <tbody>
+                {riskSnapshots.map((snap) => (
+                  <tr key={snap.participant_session_id} className="border-b border-gray-100">
+                    <td className="py-2 px-3 text-gray-900">{snap.student_name}</td>
+                    <td className="py-2 px-3 font-mono text-gray-600">{snap.student_id}</td>
+                    <td className="py-2 px-3">
+                      <span className="font-semibold">{snap.risk_score}</span>
+                      <span className="text-gray-400 text-xs"> / 100</span>
+                    </td>
+                    <td className="py-2 px-3">
+                      <RiskBadge level={snap.risk_level} />
+                    </td>
+                    <td className="py-2 px-3 text-gray-700">{snap.total_events}</td>
+                    <td className="py-2 px-3 text-red-600">{snap.high_severity_events || '-'}</td>
+                    <td className="py-2 px-3 text-xs text-gray-500">
+                      {snap.top_event_types.length > 0
+                        ? `${formatEventType(snap.top_event_types[0].event_type)} x${snap.top_event_types[0].count}`
+                        : '-'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-3 text-xs text-gray-400">
+            Risk is an assistive signal derived from monitoring events. Teacher review remains the decision maker.
+          </p>
+        </div>
+      )}
+
       {/* Live Monitoring Events Section (Phase 4) */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mt-6">
         <div className="flex items-center justify-between mb-4">
@@ -688,6 +799,28 @@ function SeverityBadge({ severity }: { severity: string }) {
       }`}
     >
       {severity}
+    </span>
+  )
+}
+
+// Risk badge component (Phase 9)
+const RISK_COLORS: Record<string, string> = {
+  normal: 'bg-green-100 text-green-800',
+  low: 'bg-blue-100 text-blue-800',
+  medium: 'bg-yellow-100 text-yellow-800',
+  high: 'bg-orange-100 text-orange-800',
+  critical: 'bg-red-100 text-red-800',
+}
+
+function RiskBadge({ level }: { level: string }) {
+  const label = level.charAt(0).toUpperCase() + level.slice(1)
+  return (
+    <span
+      className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+        RISK_COLORS[level] || 'bg-gray-100 text-gray-800'
+      }`}
+    >
+      {label}
     </span>
   )
 }
