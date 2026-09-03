@@ -22,16 +22,16 @@
 // ---------------------------------------------------------------------------
 
 /** No-face must persist for at least this long before emitting. */
-export const NO_FACE_THRESHOLD_MS = 3000
+export const NO_FACE_THRESHOLD_MS = 1500
 
 /** Multiple-faces must persist for at least this long before emitting. */
-export const MULTI_FACE_THRESHOLD_MS = 2000
+export const MULTI_FACE_THRESHOLD_MS = 750
 
 /** Exactly-one-face must persist for this long to re-arm after an anomaly. */
-export const RECOVERY_THRESHOLD_MS = 2000
+export const RECOVERY_THRESHOLD_MS = 1500
 
 /** Silent period after detector start — no events emitted. */
-export const GRACE_MS = 3000
+export const GRACE_MS = 1500
 
 // ---------------------------------------------------------------------------
 // Event shape

@@ -88,21 +88,19 @@ ProctorAI/
 
 ## Current Development Status
 
-**Phase 6 — Camera + Face Presence Monitoring** (current)
+**Phase 7 — Phone + Suspicious Object Detection** (current)
 
-This phase provides:
-- Local webcam face detection using MediaPipe FaceDetector (bundled WASM + model, no CDN)
-- MV3 offscreen document for camera acquisition (separate from service worker)
-- Temporal persistence: `no_face` after 3s, `multiple_faces` after 2s
-- Episode deduplication: one event per anomaly episode, re-arm after 2s recovery
-- Startup grace period: 3s after camera+detector ready before counting anomalies
-- Camera failure ≠ no_face (permission denied / hardware error handled separately)
-- Session health check every 15s — auto-stop when session ends
-- Explicit user consent via "Enable Camera Monitoring" button in popup
-- Privacy-first: all processing local, no frames/photos/biometric data transmitted
-- Service worker restart safety: camera state persisted for MV3 recovery
+This phase adds local object detection to the existing offscreen camera pipeline:
+- MediaPipe ObjectDetector (EfficientDet Lite0, bundled WASM + model, no CDN)
+- Same webcam stream as Phase 6 (no second stream)
+- `phone_detected` after 2s of persistent cell phone visibility
+- `suspicious_object` after 2.5s of persistent prohibited object (e.g. book) visibility
+- Episode deduplication: one event per episode, re-arm after 2s absence
+- Object inference at ~1 FPS (separate from face detection at ~2 FPS)
+- Privacy-first: all processing local, no frames/photos transmitted
 
 Previous phases:
+- **Phase 6**: Camera + face presence monitoring (no_face, multiple_faces)
 - **Phase 5.1**: Window state monitoring (minimize/maximize/restore)
 - **Phase 5**: Tab-switch + fullscreen-exit detection
 - **Phase 4**: Monitoring event pipeline, WebSocket routing, real-time delivery
@@ -239,8 +237,8 @@ Load the extension in Chrome:
 | 4 | Real-time event routing + WebSockets | ✅ Complete |
 | 5 | Browser monitoring (tab/fullscreen) | ✅ Complete |
 | 5.1 | Window state monitoring (min/max/restore) | ✅ Complete |
-| 6 | Camera + face detection | ✅ Current |
-| 7 | Phone + object detection | Planned |
+| 6 | Camera + face detection | ✅ Complete |
+| 7 | Phone + object detection | ✅ Current |
 | 8 | Gaze + camera-obscured detection | Planned |
 | 9 | Risk engine + evidence + alerts | Planned |
 | 10 | Professional dashboard UI | Planned |

@@ -570,6 +570,14 @@ void (async () => {
 // Message router
 // ---------------------------------------------------------------------------
 
+/** Camera-generated event types accepted from the offscreen document. */
+const CAMERA_EVENT_WHITELIST = new Set([
+  'no_face',
+  'multiple_faces',
+  'phone_detected',
+  'suspicious_object',
+])
+
 chrome.runtime.onMessage.addListener(
   (message, _sender, sendResponse) => {
     // ---- Popup messages ----
@@ -609,17 +617,21 @@ chrome.runtime.onMessage.addListener(
 
     // ---- Offscreen document messages ----
     else if (message.target === 'service-worker') {
-      if (message.type === 'FACE_MONITORING_EVENT') {
-        // Whitelist: only no_face and multiple_faces are valid camera events.
-        // Reject severity, monitoring_session_id, instructor_id, etc.
+      if (
+        message.type === 'FACE_MONITORING_EVENT' ||
+        message.type === 'OBJECT_MONITORING_EVENT'
+      ) {
+        // Strict whitelist: only these four camera-generated event types are accepted.
+        // Do NOT accept severity, monitoring_session_id, instructor_id, etc.
         const event = message.event
         if (
           event &&
           typeof event.event_type === 'string' &&
-          (event.event_type === 'no_face' || event.event_type === 'multiple_faces')
+          CAMERA_EVENT_WHITELIST.has(event.event_type)
         ) {
           void submitEvent({
             event_type: event.event_type,
+            confidence: event.confidence,
             client_event_id: event.client_event_id,
             client_occurred_at: event.client_occurred_at,
             metadata: event.metadata,

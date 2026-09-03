@@ -1,1 +1,1 @@
-{"root":["./src/background/service-worker.ts","./src/camera/facepresencedetector.ts","./src/camera-permission/camera-permission.tsx","./src/offscreen/offscreen.ts","./src/popup/popup.tsx","./src/services/api.ts","./src/types/index.ts"],"version":"5.6.3"}
+{"root":["./src/background/service-worker.ts","./src/camera/facepresencedetector.ts","./src/camera/objectpresencedetector.ts","./src/camera-permission/camera-permission.tsx","./src/offscreen/offscreen.ts","./src/popup/popup.tsx","./src/services/api.ts","./src/types/index.ts"],"version":"5.6.3"}
