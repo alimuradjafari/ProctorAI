@@ -22,6 +22,7 @@ import {
   FilesetResolver,
   FaceDetector,
   ObjectDetector,
+  FaceLandmarker,
 } from '@mediapipe/tasks-vision'
 
 import { FacePresenceDetector } from '../camera/FacePresenceDetector'
@@ -32,6 +33,15 @@ import type {
   ObjectDetectorEvent,
   ObjectSampleInput,
 } from '../camera/ObjectPresenceDetector'
+
+import { HeadOrientationDetector } from '../camera/HeadOrientationDetector'
+import type { HeadSampleInput } from '../camera/HeadOrientationDetector'
+
+import {
+  FrameIntegrityDetector,
+  classifyFrame,
+} from '../camera/FrameIntegrityDetector'
+import type { FrameStatsInput } from '../camera/FrameIntegrityDetector'
 
 // ---------------------------------------------------------------------------
 // MediaPipe types
@@ -56,6 +66,36 @@ const SAMPLE_INTERVAL_MS = 250
 
 /** Target object inference rate: ~5 FPS → 200 ms between samples. */
 const OBJECT_SAMPLE_INTERVAL_MS = 200
+
+/** Target face-landmarker inference rate: ~3 FPS → 333 ms between samples. */
+const LANDMARK_SAMPLE_INTERVAL_MS = 333
+
+/** Target frame-integrity analysis rate: ~2 FPS → 500 ms between samples. */
+const FRAME_INTEGRITY_INTERVAL_MS = 500
+
+/** Downsampled canvas width for frame-integrity analysis. */
+const INTEGRITY_WIDTH = 32
+
+/** Downsampled canvas height for frame-integrity analysis. */
+const INTEGRITY_HEIGHT = 24
+
+// ---- Head orientation thresholds ----
+
+/**
+ * Normalized yaw threshold for looking left/right.
+ * yawNorm = (noseX - eyeCenterX) / interEyeDistance
+ * Values above this indicate head turned noticeably.
+ */
+const YAW_THRESHOLD = 0.35
+
+// ---- MediaPipe face landmark indices ----
+
+/** Nose tip — primary reference for head orientation. */
+const LM_NOSE_TIP = 1
+/** Left eye outer corner (right side of screen in mirrored view). */
+const LM_LEFT_EYE_OUTER = 33
+/** Right eye outer corner. */
+const LM_RIGHT_EYE_OUTER = 263
 
 /** How often to ask the service worker to verify the session is still LIVE. */
 const SESSION_CHECK_INTERVAL_MS = 15_000
@@ -86,16 +126,27 @@ let mediaStream: MediaStream | null = null
 
 let faceDetector: FaceDetector | null = null
 let objectDetector: ObjectDetector | null = null
+let faceLandmarker: FaceLandmarker | null = null
 
 let presenceDetector: FacePresenceDetector | null = null
 let objectPresenceDetector: ObjectPresenceDetector | null = null
+let headOrientationDetector: HeadOrientationDetector | null = null
+let frameIntegrityDetector: FrameIntegrityDetector | null = null
 
 let inferenceTimer: ReturnType<typeof setInterval> | null = null
 let objectInferenceTimer: ReturnType<typeof setInterval> | null = null
+let landmarkInferenceTimer: ReturnType<typeof setInterval> | null = null
+let frameIntegrityTimer: ReturnType<typeof setInterval> | null = null
 let sessionCheckTimer: ReturnType<typeof setInterval> | null = null
 
 let inferenceRunning = false
 let objectInferenceRunning = false
+let landmarkInferenceRunning = false
+let frameIntegrityRunning = false
+
+/** Offscreen canvas for frame-integrity downsampling. */
+let integrityCanvas: OffscreenCanvas | null = null
+let integrityCtx: OffscreenCanvasRenderingContext2D | null = null
 
 let running = false
 let starting = false
@@ -173,7 +224,19 @@ async function startCamera(): Promise<void> {
     await initObjectDetector(vision)
 
     // -----------------------------------------------------------------------
-    // 4. Construct temporal detectors AFTER all detectors are ready
+    // 4. Initialise MediaPipe FaceLandmarker
+    // -----------------------------------------------------------------------
+
+    await initFaceLandmarker(vision)
+
+    // -----------------------------------------------------------------------
+    // 5. Initialise frame-integrity analyzer
+    // -----------------------------------------------------------------------
+
+    initFrameIntegrity()
+
+    // -----------------------------------------------------------------------
+    // 6. Construct temporal detectors AFTER all detectors are ready
     // -----------------------------------------------------------------------
     //
     // This ensures the startup grace period begins only when inference
@@ -187,20 +250,38 @@ async function startCamera(): Promise<void> {
     objectPresenceDetector =
       new ObjectPresenceDetector(now)
 
+    headOrientationDetector =
+      new HeadOrientationDetector(now)
+
+    frameIntegrityDetector =
+      new FrameIntegrityDetector(now)
+
     // -----------------------------------------------------------------------
-    // 5. Start face inference loop (~4 FPS)
+    // 7. Start face inference loop (~4 FPS)
     // -----------------------------------------------------------------------
 
     startInferenceLoop()
 
     // -----------------------------------------------------------------------
-    // 6. Start object inference loop (~5 FPS)
+    // 8. Start object inference loop (~5 FPS)
     // -----------------------------------------------------------------------
 
     startObjectInferenceLoop()
 
     // -----------------------------------------------------------------------
-    // 7. Start session health check
+    // 9. Start landmark inference loop (~3 FPS)
+    // -----------------------------------------------------------------------
+
+    startLandmarkInferenceLoop()
+
+    // -----------------------------------------------------------------------
+    // 10. Start frame-integrity loop (~2 FPS)
+    // -----------------------------------------------------------------------
+
+    startFrameIntegrityLoop()
+
+    // -----------------------------------------------------------------------
+    // 11. Start session health check
     // -----------------------------------------------------------------------
 
     startSessionCheckLoop()
@@ -330,6 +411,24 @@ function stopCamera(): void {
   }
 
   // -------------------------------------------------------------------------
+  // Stop landmark inference timer
+  // -------------------------------------------------------------------------
+
+  if (landmarkInferenceTimer !== null) {
+    clearInterval(landmarkInferenceTimer)
+    landmarkInferenceTimer = null
+  }
+
+  // -------------------------------------------------------------------------
+  // Stop frame-integrity timer
+  // -------------------------------------------------------------------------
+
+  if (frameIntegrityTimer !== null) {
+    clearInterval(frameIntegrityTimer)
+    frameIntegrityTimer = null
+  }
+
+  // -------------------------------------------------------------------------
   // Stop session check
   // -------------------------------------------------------------------------
 
@@ -341,6 +440,8 @@ function stopCamera(): void {
   // Prevent inference from emitting during teardown
   inferenceRunning = true
   objectInferenceRunning = true
+  landmarkInferenceRunning = true
+  frameIntegrityRunning = true
 
   // -------------------------------------------------------------------------
   // Dispose MediaPipe FaceDetector
@@ -371,6 +472,20 @@ function stopCamera(): void {
   }
 
   // -------------------------------------------------------------------------
+  // Dispose MediaPipe FaceLandmarker
+  // -------------------------------------------------------------------------
+
+  if (faceLandmarker) {
+    try {
+      faceLandmarker.close()
+    } catch {
+      // Ignore teardown errors
+    }
+
+    faceLandmarker = null
+  }
+
+  // -------------------------------------------------------------------------
   // Reset temporal detectors
   // -------------------------------------------------------------------------
 
@@ -382,6 +497,16 @@ function stopCamera(): void {
   if (objectPresenceDetector) {
     objectPresenceDetector.reset()
     objectPresenceDetector = null
+  }
+
+  if (headOrientationDetector) {
+    headOrientationDetector.reset(Date.now())
+    headOrientationDetector = null
+  }
+
+  if (frameIntegrityDetector) {
+    frameIntegrityDetector.reset(Date.now())
+    frameIntegrityDetector = null
   }
 
   // -------------------------------------------------------------------------
@@ -406,6 +531,8 @@ function stopCamera(): void {
 
   inferenceRunning = false
   objectInferenceRunning = false
+  landmarkInferenceRunning = false
+  frameIntegrityRunning = false
 
   try {
     sendStatus('inactive')
@@ -434,6 +561,16 @@ function cleanupPartialResources(): void {
   if (objectInferenceTimer !== null) {
     clearInterval(objectInferenceTimer)
     objectInferenceTimer = null
+  }
+
+  if (landmarkInferenceTimer !== null) {
+    clearInterval(landmarkInferenceTimer)
+    landmarkInferenceTimer = null
+  }
+
+  if (frameIntegrityTimer !== null) {
+    clearInterval(frameIntegrityTimer)
+    frameIntegrityTimer = null
   }
 
   if (sessionCheckTimer !== null) {
@@ -470,11 +607,27 @@ function cleanupPartialResources(): void {
   }
 
   // -------------------------------------------------------------------------
+  // Dispose face landmarker
+  // -------------------------------------------------------------------------
+
+  if (faceLandmarker) {
+    try {
+      faceLandmarker.close()
+    } catch {
+      // Ignore cleanup errors
+    }
+
+    faceLandmarker = null
+  }
+
+  // -------------------------------------------------------------------------
   // Reset temporal detector references
   // -------------------------------------------------------------------------
 
   presenceDetector = null
   objectPresenceDetector = null
+  headOrientationDetector = null
+  frameIntegrityDetector = null
 
   // -------------------------------------------------------------------------
   // Stop camera
@@ -498,6 +651,8 @@ function cleanupPartialResources(): void {
 
   inferenceRunning = false
   objectInferenceRunning = false
+  landmarkInferenceRunning = false
+  frameIntegrityRunning = false
 }
 
 // ---------------------------------------------------------------------------
@@ -657,15 +812,28 @@ function runFaceInference(): void {
     )
 
   if (event) {
-    if (DEBUG_DETECTION) {
-      console.debug(
-        `[ProctorAI Face] EMIT ${event.event_type}`
+    // Suppress no_face events when camera is confirmed obscured
+    // to avoid redundant alerts. Other events pass through.
+    if (
+      event.event_type === 'no_face' &&
+      frameIntegrityDetector?.isObscured()
+    ) {
+      if (DEBUG_DETECTION) {
+        console.debug(
+          '[ProctorAI Face] SUPPRESS no_face (camera obscured)'
+        )
+      }
+    } else {
+      if (DEBUG_DETECTION) {
+        console.debug(
+          `[ProctorAI Face] EMIT ${event.event_type}`
+        )
+      }
+
+      sendFaceEventToServiceWorker(
+        event
       )
     }
-
-    sendFaceEventToServiceWorker(
-      event
-    )
   }
 }
 
@@ -830,6 +998,379 @@ function runObjectInference(): void {
 }
 
 // ---------------------------------------------------------------------------
+// MediaPipe FaceLandmarker initialisation
+// ---------------------------------------------------------------------------
+
+/**
+ * Initialise MediaPipe FaceLandmarker using the shared WASM fileset.
+ *
+ * If initialization fails, the error propagates to startCamera(),
+ * which fails monitoring startup cleanly.
+ */
+async function initFaceLandmarker(
+  vision: VisionFileset
+): Promise<void> {
+  const modelPath =
+    chrome.runtime.getURL(
+      'models/face_landmarker.task'
+    )
+
+  faceLandmarker =
+    await FaceLandmarker.createFromOptions(
+      vision,
+      {
+        baseOptions: {
+          modelAssetPath: modelPath,
+          delegate: 'GPU',
+        },
+        runningMode: 'VIDEO',
+        numFaces: 1,
+        minFaceDetectionConfidence: 0.5,
+        minFacePresenceConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+      }
+    )
+
+  console.log(
+    '[ProctorAI Offscreen] MediaPipe FaceLandmarker ready'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Frame integrity initialisation
+// ---------------------------------------------------------------------------
+
+/**
+ * Create the offscreen canvas used for frame-integrity analysis.
+ * The canvas downsamples the video frame to 32x24 for luminance statistics.
+ * No frame data is ever retained or transmitted.
+ */
+function initFrameIntegrity(): void {
+  integrityCanvas = new OffscreenCanvas(
+    INTEGRITY_WIDTH,
+    INTEGRITY_HEIGHT
+  )
+
+  integrityCtx = integrityCanvas.getContext('2d', {
+    willReadFrequently: true,
+  }) as OffscreenCanvasRenderingContext2D | null
+
+  if (!integrityCtx) {
+    throw new Error(
+      'Failed to get 2D context for frame-integrity canvas'
+    )
+  }
+
+  console.log(
+    '[ProctorAI Offscreen] Frame integrity analyzer ready'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Landmark inference loop (~3 FPS)
+// ---------------------------------------------------------------------------
+
+function startLandmarkInferenceLoop(): void {
+  landmarkInferenceTimer = setInterval(
+    () => {
+      // Overlap protection
+      if (landmarkInferenceRunning) {
+        return
+      }
+
+      landmarkInferenceRunning = true
+
+      try {
+        runLandmarkInference()
+      } catch (err) {
+        // Landmarker errors are logged but NEVER interpreted as looking_away
+        console.debug(
+          '[ProctorAI Offscreen] Landmark inference error:',
+          err
+        )
+      } finally {
+        landmarkInferenceRunning = false
+      }
+    },
+    LANDMARK_SAMPLE_INTERVAL_MS
+  )
+}
+
+/**
+ * Run FaceLandmarker inference and estimate head orientation.
+ *
+ * Conditions where looking_away is NOT evaluated:
+ * - no face detected (faceCount === 0)
+ * - multiple faces detected
+ * - FaceLandmarker result is invalid
+ * - video frame is unavailable
+ * - camera is confirmed obscured
+ * - detector throws an error
+ */
+function runLandmarkInference(): void {
+  if (
+    !videoElement ||
+    !faceLandmarker ||
+    !headOrientationDetector ||
+    !presenceDetector
+  ) {
+    return
+  }
+
+  if (videoElement.readyState < 2) {
+    return
+  }
+
+  if (
+    videoElement.videoWidth === 0 ||
+    videoElement.videoHeight === 0
+  ) {
+    return
+  }
+
+  // Skip if camera is obscured — landmark results are unreliable
+  if (frameIntegrityDetector?.isObscured()) {
+    return
+  }
+
+  const timestamp = performance.now()
+
+  const result = faceLandmarker.detectForVideo(
+    videoElement,
+    timestamp
+  )
+
+  // Require exactly one face for orientation estimation
+  const faceCount = result.faceLandmarks?.length ?? 0
+
+  if (faceCount !== 1) {
+    // Cannot determine orientation — skip this sample
+    return
+  }
+
+  const landmarks = result.faceLandmarks![0]
+
+  if (!landmarks || landmarks.length < 264) {
+    return
+  }
+
+  const orientation = estimateHeadOrientation(landmarks)
+
+  if (DEBUG_DETECTION) {
+    console.debug(
+      `[ProctorAI Head] orientation=${orientation.orientation} away=${orientation.lookingAway}`
+    )
+  }
+
+  const input: HeadSampleInput = {
+    lookingAway: orientation.lookingAway,
+    orientation: orientation.orientation,
+  }
+
+  const events = headOrientationDetector.processSample(
+    input,
+    Date.now()
+  )
+
+  for (const event of events) {
+    if (DEBUG_DETECTION) {
+      console.debug(
+        `[ProctorAI Head] EMIT ${event.event_type} dir=${event.metadata.orientation}`
+      )
+    }
+
+    sendLandmarkEventToServiceWorker(event)
+  }
+}
+
+/**
+ * Estimate head orientation from facial landmarks.
+ *
+ * Uses three stable landmarks:
+ *   - Nose tip (index 1)
+ *   - Left eye outer corner (index 33)
+ *   - Right eye outer corner (index 263)
+ *
+ * Normalization:
+ *   eyeCenterX = midpoint(leftEyeX, rightEyeX)
+ *   eyeMidY    = midpoint(leftEyeY, rightEyeY)
+ *   interEye   = abs(rightEyeX - leftEyeX)
+ *
+ *   yawNorm     = (noseX - eyeCenterX) / interEye
+ *   verticalNorm = (noseY - eyeMidY) / interEye
+ *
+ * Thresholds:
+ *   |yawNorm| > YAW_THRESHOLD (0.35) => left or right
+ *   verticalNorm > DOWN_THRESHOLD (0.25) => down
+ *   verticalNorm < UP_THRESHOLD (-0.15) => up
+ */
+function estimateHeadOrientation(
+  landmarks: Array<{ x: number; y: number; z: number }>
+): { lookingAway: boolean; orientation: 'forward' | 'left' | 'right' | 'down' | 'up' } {
+  const noseTip = landmarks[LM_NOSE_TIP]
+  const leftEye = landmarks[LM_LEFT_EYE_OUTER]
+  const rightEye = landmarks[LM_RIGHT_EYE_OUTER]
+
+  const eyeCenterX = (leftEye.x + rightEye.x) / 2
+  const interEye = Math.abs(rightEye.x - leftEye.x)
+
+  // Guard against degenerate geometry
+  if (interEye < 0.01) {
+    return { lookingAway: false, orientation: 'forward' }
+  }
+
+  const yawNorm = (noseTip.x - eyeCenterX) / interEye
+  // Horizontal turn takes priority
+  if (yawNorm > YAW_THRESHOLD) {
+    return { lookingAway: true, orientation: 'right' }
+  }
+
+  if (yawNorm < -YAW_THRESHOLD) {
+    return { lookingAway: true, orientation: 'left' }
+  }
+
+  return { lookingAway: false, orientation: 'forward' }
+}
+
+// ---------------------------------------------------------------------------
+// Frame integrity inference loop (~2 FPS)
+// ---------------------------------------------------------------------------
+
+function startFrameIntegrityLoop(): void {
+  frameIntegrityTimer = setInterval(
+    () => {
+      // Overlap protection
+      if (frameIntegrityRunning) {
+        return
+      }
+
+      frameIntegrityRunning = true
+
+      try {
+        runFrameIntegrity()
+      } catch (err) {
+        console.debug(
+          '[ProctorAI Offscreen] Frame integrity error:',
+          err
+        )
+      } finally {
+        frameIntegrityRunning = false
+      }
+    },
+    FRAME_INTEGRITY_INTERVAL_MS
+  )
+}
+
+/**
+ * Analyze the current video frame for obstruction.
+ *
+ * The frame is drawn onto a tiny offscreen canvas (32x24), then
+ * luminance statistics are computed from the resulting pixel data.
+ * Pixel data is immediately discarded after computing statistics.
+ */
+function runFrameIntegrity(): void {
+  if (
+    !videoElement ||
+    !integrityCtx ||
+    !frameIntegrityDetector
+  ) {
+    return
+  }
+
+  if (videoElement.readyState < 2) {
+    return
+  }
+
+  if (
+    videoElement.videoWidth === 0 ||
+    videoElement.videoHeight === 0
+  ) {
+    return
+  }
+
+  // Draw the current video frame downsampled to 32x24
+  integrityCtx.drawImage(
+    videoElement,
+    0,
+    0,
+    INTEGRITY_WIDTH,
+    INTEGRITY_HEIGHT
+  )
+
+  const imageData = integrityCtx.getImageData(
+    0,
+    0,
+    INTEGRITY_WIDTH,
+    INTEGRITY_HEIGHT
+  )
+
+  const stats = analyzeFrameStats(imageData.data)
+
+  if (DEBUG_DETECTION) {
+    const obscured = classifyFrame(stats) !== null
+    console.debug(
+      `[ProctorAI Integrity] mean=${stats.meanLuminance.toFixed(0)} stddev=${stats.luminanceStddev.toFixed(0)} obscured=${obscured}`
+    )
+  }
+
+  const events = frameIntegrityDetector.processSample(
+    stats,
+    Date.now()
+  )
+
+  for (const event of events) {
+    if (DEBUG_DETECTION) {
+      console.debug(
+        `[ProctorAI Integrity] EMIT ${event.event_type} type=${event.metadata.obstruction_type}`
+      )
+    }
+
+    sendIntegrityEventToServiceWorker(event)
+  }
+}
+
+/**
+ * Compute frame-integrity statistics from raw RGBA pixel data.
+ *
+ * Returns mean luminance, luminance standard deviation,
+ * and ratios of very-dark and very-bright pixels.
+ * No pixel data is retained after this function returns.
+ */
+function analyzeFrameStats(rgba: Uint8ClampedArray): FrameStatsInput {
+  const pixelCount = rgba.length / 4
+  let sumLum = 0
+  let sumLumSq = 0
+  let darkCount = 0
+  let brightCount = 0
+
+  for (let i = 0; i < rgba.length; i += 4) {
+    // Perceived luminance from sRGB: ITU-R BT.601
+    const lum = 0.299 * rgba[i] + 0.587 * rgba[i + 1] + 0.114 * rgba[i + 2]
+    sumLum += lum
+    sumLumSq += lum * lum
+
+    if (lum < 15) {
+      darkCount++
+    }
+
+    if (lum > 240) {
+      brightCount++
+    }
+  }
+
+const meanLuminance = sumLum / pixelCount
+const variance = sumLumSq / pixelCount - meanLuminance * meanLuminance
+const luminanceStddev = Math.sqrt(Math.max(0, variance))
+
+  return {
+    meanLuminance,
+    luminanceStddev,
+    darkPixelRatio: darkCount / pixelCount,
+    brightPixelRatio: brightCount / pixelCount,
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Session health check (every 15 seconds)
 // ---------------------------------------------------------------------------
 
@@ -875,6 +1416,34 @@ function sendObjectEventToServiceWorker(
     .sendMessage({
       target: 'service-worker',
       type: 'OBJECT_MONITORING_EVENT',
+      event,
+    })
+    .catch(() => {
+      // Service worker may have suspended
+    })
+}
+
+function sendLandmarkEventToServiceWorker(
+  event: import('../camera/HeadOrientationDetector').HeadOrientationEvent
+): void {
+  chrome.runtime
+    .sendMessage({
+      target: 'service-worker',
+      type: 'LANDMARK_MONITORING_EVENT',
+      event,
+    })
+    .catch(() => {
+      // Service worker may have suspended
+    })
+}
+
+function sendIntegrityEventToServiceWorker(
+  event: import('../camera/FrameIntegrityDetector').FrameIntegrityEvent
+): void {
+  chrome.runtime
+    .sendMessage({
+      target: 'service-worker',
+      type: 'INTEGRITY_MONITORING_EVENT',
       event,
     })
     .catch(() => {

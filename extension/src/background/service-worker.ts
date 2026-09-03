@@ -576,6 +576,8 @@ const CAMERA_EVENT_WHITELIST = new Set([
   'multiple_faces',
   'phone_detected',
   'suspicious_object',
+  'looking_away',
+  'camera_obscured',
 ])
 
 chrome.runtime.onMessage.addListener(
@@ -619,9 +621,11 @@ chrome.runtime.onMessage.addListener(
     else if (message.target === 'service-worker') {
       if (
         message.type === 'FACE_MONITORING_EVENT' ||
-        message.type === 'OBJECT_MONITORING_EVENT'
+        message.type === 'OBJECT_MONITORING_EVENT' ||
+        message.type === 'LANDMARK_MONITORING_EVENT' ||
+        message.type === 'INTEGRITY_MONITORING_EVENT'
       ) {
-        // Strict whitelist: only these four camera-generated event types are accepted.
+        // Strict whitelist: only these camera-generated event types are accepted.
         // Do NOT accept severity, monitoring_session_id, instructor_id, etc.
         const event = message.event
         if (

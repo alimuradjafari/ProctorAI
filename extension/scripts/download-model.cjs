@@ -11,6 +11,10 @@ const MODELS = [
     url: 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite',
     dest: path.join(__dirname, '..', 'public', 'models', 'efficientdet_lite0.tflite'),
   },
+  {
+    url: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+    dest: path.join(__dirname, '..', 'public', 'models', 'face_landmarker.task'),
+  },
 ];
 
 function download(url, dest, redirectCount = 0) {
