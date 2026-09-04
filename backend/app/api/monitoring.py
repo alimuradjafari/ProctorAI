@@ -104,7 +104,7 @@ def delete_session(
     instructor: dict = Depends(get_current_instructor),
     db: Session = Depends(get_db),
 ):
-    """Delete a monitoring session (DRAFT or CANCELLED only)."""
+    """Delete a monitoring session (DRAFT, CANCELLED, or ENDED only)."""
     service = MonitoringService(db)
     try:
         service.delete_session(session_id, instructor["id"])

@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 from app.core.config import get_settings
 from app.api import api_router
 from app.api.websocket import router as ws_router
+from app.api.screen_review_ws import router as screen_review_ws_router
 
 
 @asynccontextmanager
@@ -45,6 +46,7 @@ def create_app() -> FastAPI:
     # Register routes
     app.include_router(api_router)
     app.include_router(ws_router)  # WebSocket routes (not under /api prefix)
+    app.include_router(screen_review_ws_router)  # Screen review signaling WS
 
     return app
 

@@ -108,9 +108,16 @@ class MonitoringService:
     def delete_session(self, session_id: int, instructor_id: int) -> None:
         session = self._get_owned_session(session_id, instructor_id)
 
-        # Only allow deletion of DRAFT or CANCELLED sessions
-        if session.status not in (SessionStatus.DRAFT, SessionStatus.CANCELLED):
-            raise ValueError("Only DRAFT or CANCELLED sessions can be deleted")
+        # Allow deletion of DRAFT, CANCELLED, or ENDED sessions.
+        # LIVE and WAITING sessions must not be deleted.
+        if session.status not in (
+            SessionStatus.DRAFT,
+            SessionStatus.CANCELLED,
+            SessionStatus.ENDED,
+        ):
+            raise ValueError(
+                "Only DRAFT, CANCELLED, or ENDED sessions can be deleted"
+            )
 
         try:
             self.repo.delete_session(session)

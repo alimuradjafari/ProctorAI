@@ -405,3 +405,135 @@ def test_delete_live_session_fails(client):
     # Try to delete
     response = client.delete(f"/api/monitoring-sessions/{session_id}", headers=auth_headers(token))
     assert response.status_code == 400
+
+
+def test_delete_waiting_session_fails(client):
+    """WAITING sessions must not be deleted."""
+    token = register_and_login(client, INSTRUCTOR_A)
+    session_id = create_session(client, token).json()["id"]
+
+    # Move to WAITING
+    client.post(f"/api/monitoring-sessions/{session_id}/prepare", headers=auth_headers(token))
+
+    response = client.delete(f"/api/monitoring-sessions/{session_id}", headers=auth_headers(token))
+    assert response.status_code == 400
+
+
+def test_delete_ended_session(client):
+    """Owner can delete an ENDED session."""
+    token = register_and_login(client, INSTRUCTOR_A)
+    session_id = create_session(client, token).json()["id"]
+
+    # Advance: DRAFT -> WAITING -> LIVE -> ENDED
+    client.post(f"/api/monitoring-sessions/{session_id}/prepare", headers=auth_headers(token))
+    client.post(f"/api/monitoring-sessions/{session_id}/start", headers=auth_headers(token))
+    client.post(f"/api/monitoring-sessions/{session_id}/end", headers=auth_headers(token))
+
+    response = client.delete(f"/api/monitoring-sessions/{session_id}", headers=auth_headers(token))
+    assert response.status_code == 204
+
+    # Verify session is gone
+    get_resp = client.get(f"/api/monitoring-sessions/{session_id}", headers=auth_headers(token))
+    assert get_resp.status_code == 404
+
+
+def test_delete_ended_session_other_instructor_fails(client):
+    """Another instructor cannot delete someone else's ended session."""
+    token_a = register_and_login(client, INSTRUCTOR_A)
+    token_b = register_and_login(client, INSTRUCTOR_B)
+    session_id = create_session(client, token_a).json()["id"]
+
+    # Advance to ENDED
+    client.post(f"/api/monitoring-sessions/{session_id}/prepare", headers=auth_headers(token_a))
+    client.post(f"/api/monitoring-sessions/{session_id}/start", headers=auth_headers(token_a))
+    client.post(f"/api/monitoring-sessions/{session_id}/end", headers=auth_headers(token_a))
+
+    # Instructor B tries to delete
+    response = client.delete(f"/api/monitoring-sessions/{session_id}", headers=auth_headers(token_b))
+    assert response.status_code == 404
+
+
+def test_delete_ended_session_participant_token_fails(client):
+    """Participant token cannot delete a session."""
+    token_a = register_and_login(client, INSTRUCTOR_A)
+    # Use open_join so participants can join without roster
+    resp = client.post(
+        "/api/monitoring-sessions",
+        json={"title": "Test", "join_mode": "open_join"},
+        headers=auth_headers(token_a),
+    )
+    session_id = resp.json()["id"]
+    exam_code = resp.json()["exam_code"]
+
+    # Advance to WAITING so participants can join
+    client.post(f"/api/monitoring-sessions/{session_id}/prepare", headers=auth_headers(token_a))
+
+    # Get participant token
+    join_resp = client.post(
+        "/api/participant-sessions/join",
+        json={"exam_code": exam_code, "student_id": "2024-CS-001", "student_name": "Ali Khan"},
+    )
+    p_token = join_resp.json()["participant_access_token"]
+
+    # Start then end the session
+    client.post(f"/api/monitoring-sessions/{session_id}/start", headers=auth_headers(token_a))
+    client.post(f"/api/monitoring-sessions/{session_id}/end", headers=auth_headers(token_a))
+
+    # Participant tries to delete
+    response = client.delete(
+        f"/api/monitoring-sessions/{session_id}",
+        headers=auth_headers(p_token),
+    )
+    # Participant tokens are rejected by get_current_instructor dependency
+    assert response.status_code in (401, 403, 404)
+
+
+def test_delete_ended_session_cascade(client):
+    """Deleting an ENDED session cascades to roster entries and related records."""
+    token = register_and_login(client, INSTRUCTOR_A)
+    resp = create_session(client, token)
+    session_id = resp.json()["id"]
+    exam_code = resp.json()["exam_code"]
+
+    # Add roster entries
+    client.post(
+        f"/api/monitoring-sessions/{session_id}/roster",
+        json={"student_id": "2024-CS-001", "student_name": "Ali Khan"},
+        headers=auth_headers(token),
+    )
+    client.post(
+        f"/api/monitoring-sessions/{session_id}/roster",
+        json={"student_id": "2024-CS-002", "student_name": "Sara Ahmed"},
+        headers=auth_headers(token),
+    )
+
+    # Prepare -> Start -> End
+    client.post(f"/api/monitoring-sessions/{session_id}/prepare", headers=auth_headers(token))
+
+    # Join a participant (creates participant_session)
+    join_resp = client.post(
+        "/api/participant-sessions/join",
+        json={"exam_code": exam_code, "student_id": "2024-CS-001", "student_name": "Ali Khan"},
+    )
+    assert join_resp.status_code == 200
+
+    client.post(f"/api/monitoring-sessions/{session_id}/start", headers=auth_headers(token))
+    client.post(f"/api/monitoring-sessions/{session_id}/end", headers=auth_headers(token))
+
+    # Delete — should succeed without FK constraint errors
+    response = client.delete(f"/api/monitoring-sessions/{session_id}", headers=auth_headers(token))
+    assert response.status_code == 204
+
+    # Roster should be gone (cascade)
+    roster_resp = client.get(
+        f"/api/monitoring-sessions/{session_id}/roster", headers=auth_headers(token)
+    )
+    assert roster_resp.status_code == 404
+
+
+def test_delete_nonexistent_session_safe(client):
+    """Deleting a nonexistent session returns 404 and leaks no ownership info."""
+    token = register_and_login(client, INSTRUCTOR_A)
+
+    response = client.delete("/api/monitoring-sessions/999999", headers=auth_headers(token))
+    assert response.status_code == 404

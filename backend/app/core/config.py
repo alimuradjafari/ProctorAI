@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     # WebSocket
     WS_URL: str = "ws://localhost:8000"
 
+    # WebRTC ICE servers (JSON string, empty for local dev)
+    # Example: '[{"urls": "stun:stun.l.google.com:19302"}]'
+    WEBRTC_ICE_SERVERS: str = ""
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

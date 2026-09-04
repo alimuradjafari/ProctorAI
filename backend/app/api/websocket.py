@@ -17,6 +17,7 @@ Security:
 """
 
 import asyncio
+import json
 import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -24,9 +25,18 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.core.security import verify_access_token, TokenError
 from app.core.database import SessionLocal
 from app.repositories.monitoring_repository import MonitoringRepository
+from app.repositories.participant_repository import ParticipantRepository
 from app.services.websocket_manager import manager
+from app.services.screen_review_manager import (
+    ScreenReviewStatus,
+    screen_review_manager,
+)
 
 logger = logging.getLogger(__name__)
+
+# Screen review SDP/ICE size limits
+_MAX_SDP_SIZE = 10_240  # 10 KB
+_MAX_CANDIDATE_SIZE = 1024  # 1 KB
 
 # Authentication timeout in seconds — unauthenticated connections are closed
 WS_AUTH_TIMEOUT_SECONDS = 10
@@ -108,14 +118,29 @@ async def monitoring_session_ws(websocket: WebSocket, monitoring_session_id: int
         authenticated = True
 
         # --- Event forwarding phase ---
-        # Keep connection open; just handle pings/disconnects
+        # Keep connection open; handle pings, screen review signaling
         while True:
             try:
-                # Receive client messages (pings, keep-alives, etc.)
                 data = await websocket.receive_text()
-                # Optionally respond to ping messages
+
                 if data == "ping":
                     await websocket.send_text("pong")
+                    continue
+
+                # Try to parse as JSON for screen review messages
+                try:
+                    msg = json.loads(data)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+
+                if not isinstance(msg, dict):
+                    continue
+
+                msg_type = msg.get("type")
+                await _handle_instructor_screen_review(
+                    msg_type, msg, websocket, monitoring_session_id, instructor_id
+                )
+
             except WebSocketDisconnect:
                 break
             except Exception:
@@ -128,3 +153,207 @@ async def monitoring_session_ws(websocket: WebSocket, monitoring_session_id: int
     finally:
         if authenticated:
             await manager.disconnect(monitoring_session_id, websocket)
+            # Clean up any screen reviews initiated from this connection
+            cleaned = await screen_review_manager.cleanup_by_session(
+                monitoring_session_id
+            )
+            for req in cleaned:
+                try:
+                    await screen_review_manager.send_to_participant(
+                        req.participant_session_id,
+                        {
+                            "type": "screen_review_stopped",
+                            "screen_review_id": req.screen_review_id,
+                        },
+                    )
+                except Exception:
+                    pass
+
+
+async def _handle_instructor_screen_review(
+    msg_type: str | None,
+    msg: dict,
+    websocket: WebSocket,
+    monitoring_session_id: int,
+    instructor_id: int,
+) -> None:
+    """Handle screen review signaling messages from the instructor."""
+
+    if msg_type == "screen_review_request":
+        participant_session_id = msg.get("participant_session_id")
+        if not isinstance(participant_session_id, str) or not participant_session_id:
+            return
+
+        # Validate participant belongs to this session
+        try:
+            db = SessionLocal()
+            repo = ParticipantRepository(db)
+            participant = repo.get_participant_by_psid(participant_session_id)
+            db.close()
+        except Exception:
+            await websocket.send_json({
+                "type": "screen_review_status",
+                "status": "error",
+                "message": "Database error",
+            })
+            return
+
+        if (
+            participant is None
+            or participant.monitoring_session_id != monitoring_session_id
+        ):
+            await websocket.send_json({
+                "type": "screen_review_status",
+                "status": "error",
+                "message": "Participant not found in this session",
+                "participant_session_id": participant_session_id,
+            })
+            return
+
+        # Create request
+        request = await screen_review_manager.create_request(
+            monitoring_session_id=monitoring_session_id,
+            participant_session_id=participant_session_id,
+            instructor_id=instructor_id,
+            instructor_ws=websocket,
+        )
+
+        if request is None:
+            await websocket.send_json({
+                "type": "screen_review_status",
+                "status": "error",
+                "message": "Another screen review is already active",
+                "participant_session_id": participant_session_id,
+            })
+            return
+
+        # Notify instructor that request is pending
+        await websocket.send_json({
+            "type": "screen_review_status",
+            "screen_review_id": request.screen_review_id,
+            "status": "requested",
+            "participant_session_id": participant_session_id,
+        })
+
+        # Forward request to participant
+        sent = await screen_review_manager.send_to_participant(
+            participant_session_id,
+            {
+                "type": "screen_review_request",
+                "screen_review_id": request.screen_review_id,
+                "monitoring_session_id": monitoring_session_id,
+            },
+        )
+
+        if not sent:
+            # Participant not connected
+            await screen_review_manager.update_status(
+                request.screen_review_id, ScreenReviewStatus.FAILED
+            )
+            await websocket.send_json({
+                "type": "screen_review_status",
+                "screen_review_id": request.screen_review_id,
+                "status": "failed",
+                "message": "Participant not connected",
+                "participant_session_id": participant_session_id,
+            })
+
+    elif msg_type == "screen_review_answer":
+        review_id = msg.get("screen_review_id")
+        sdp = msg.get("sdp")
+
+        if (
+            not isinstance(review_id, str)
+            or not isinstance(sdp, str)
+            or len(sdp) > _MAX_SDP_SIZE
+        ):
+            return
+
+        request = await screen_review_manager.get_request(review_id)
+        if request is None:
+            return
+        if (
+            request.instructor_id != instructor_id
+            or request.monitoring_session_id != monitoring_session_id
+        ):
+            return
+        if request.status != ScreenReviewStatus.ACCEPTED:
+            return
+
+        # Relay answer to participant
+        await screen_review_manager.send_to_participant(
+            request.participant_session_id,
+            {
+                "type": "screen_review_answer",
+                "screen_review_id": review_id,
+                "sdp": sdp,
+            },
+        )
+
+    elif msg_type == "screen_review_ice_candidate":
+        review_id = msg.get("screen_review_id")
+        candidate = msg.get("candidate")
+        sdp_mid = msg.get("sdpMid")
+        sdp_mline_index = msg.get("sdpMLineIndex")
+
+        if (
+            not isinstance(review_id, str)
+            or not isinstance(candidate, str)
+            or len(candidate) > _MAX_CANDIDATE_SIZE
+        ):
+            return
+
+        request = await screen_review_manager.get_request(review_id)
+        if request is None:
+            return
+        if (
+            request.instructor_id != instructor_id
+            or request.monitoring_session_id != monitoring_session_id
+        ):
+            return
+        if request.status in {
+            ScreenReviewStatus.DECLINED,
+            ScreenReviewStatus.STOPPED,
+            ScreenReviewStatus.EXPIRED,
+            ScreenReviewStatus.FAILED,
+        }:
+            return
+
+        # Relay ICE candidate to participant
+        await screen_review_manager.send_to_participant(
+            request.participant_session_id,
+            {
+                "type": "screen_review_ice_candidate",
+                "screen_review_id": review_id,
+                "candidate": candidate,
+                "sdpMid": sdp_mid,
+                "sdpMLineIndex": sdp_mline_index,
+            },
+        )
+
+    elif msg_type == "screen_review_stop":
+        review_id = msg.get("screen_review_id")
+        if not isinstance(review_id, str):
+            return
+
+        request = await screen_review_manager.get_request(review_id)
+        if request is None:
+            return
+        if (
+            request.instructor_id != instructor_id
+            or request.monitoring_session_id != monitoring_session_id
+        ):
+            return
+
+        await screen_review_manager.update_status(
+            review_id, ScreenReviewStatus.STOPPED
+        )
+
+        # Notify participant to stop
+        await screen_review_manager.send_to_participant(
+            request.participant_session_id,
+            {
+                "type": "screen_review_stopped",
+                "screen_review_id": review_id,
+            },
+        )

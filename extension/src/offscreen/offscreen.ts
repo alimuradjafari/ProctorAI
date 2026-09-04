@@ -43,6 +43,8 @@ import {
 } from '../camera/FrameIntegrityDetector'
 import type { FrameStatsInput } from '../camera/FrameIntegrityDetector'
 
+import * as screenReview from './screen-review'
+
 // ---------------------------------------------------------------------------
 // MediaPipe types
 // ---------------------------------------------------------------------------
@@ -1538,6 +1540,62 @@ chrome.runtime.onMessage.addListener(
 
         break
       }
+
+      // --- Screen review messages (Phase 10.1) ---
+
+      case 'START_SCREEN_SHARE': {
+        const streamId = message.streamId as string
+        const iceServers = (message.iceServers ?? []) as RTCIceServer[]
+        const reviewId = message.screen_review_id as string
+
+        if (!streamId || !reviewId) {
+          sendResponse({ ok: false, error: 'Missing streamId or reviewId' })
+          break
+        }
+
+        screenReview.setReviewId(reviewId)
+
+        // Fire-and-forget: startScreenShare generates an offer and sends
+        // it back to the service worker via chrome.runtime.sendMessage
+        screenReview.startScreenShare(streamId, iceServers)
+          .then(() => {
+            sendResponse({ ok: true })
+          })
+          .catch((err: unknown) => {
+            console.error('[ProctorAI Offscreen] Screen share start failed:', err)
+            sendResponse({ ok: false, error: String(err) })
+          })
+
+        // Return true to keep the message channel open for async sendResponse
+        return true
+      }
+
+      case 'STOP_SCREEN_SHARE': {
+        void screenReview.stopScreenShare('offscreen_command')
+        sendResponse({ ok: true })
+        break
+      }
+
+      case 'SCREEN_REVIEW_ANSWER': {
+        const sdp = message.sdp as string
+        if (sdp) {
+          void screenReview.handleAnswer(sdp)
+        }
+        sendResponse({ ok: true })
+        break
+      }
+
+      case 'SCREEN_REVIEW_ICE_CANDIDATE': {
+        const candidate = message.candidate as string
+        const sdpMid = (message.sdpMid ?? null) as string | null
+        const sdpMLineIndex = (message.sdpMLineIndex ?? null) as number | null
+
+        if (candidate) {
+          void screenReview.handleIceCandidate(candidate, sdpMid, sdpMLineIndex)
+        }
+        sendResponse({ ok: true })
+        break
+      }
     }
 
     return true
@@ -1552,5 +1610,6 @@ window.addEventListener(
   'beforeunload',
   () => {
     stopCamera()
+    void screenReview.stopScreenShare('offscreen_unload')
   }
 )

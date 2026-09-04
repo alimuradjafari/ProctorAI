@@ -68,6 +68,8 @@ EVENT_WEIGHTS: dict[str, int] = {
     "camera_obscured": 20,
     "suspicious_object": 15,
     "no_face": 15,
+    "browser_side_panel": 15,
+    "exam_window_focus_lost": 15,
     "fullscreen_exit": 12,
     "window_minimized": 10,
     "tab_switch": 10,

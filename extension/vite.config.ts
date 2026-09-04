@@ -26,6 +26,8 @@ export default defineConfig({
         popup: resolve(__dirname, 'src/popup/popup.tsx'),
         background: resolve(__dirname, 'src/background/service-worker.ts'),
         offscreen: resolve(__dirname, 'src/offscreen/offscreen.ts'),
+        content: resolve(__dirname, 'src/content/browser-monitor.ts'),
+        'screen-review-overlay': resolve(__dirname, 'src/content/screen-review-overlay.ts'),
         'camera-permission': resolve(__dirname, 'src/camera-permission/camera-permission.tsx'),
       },
       output: {

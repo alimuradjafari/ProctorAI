@@ -64,6 +64,8 @@ export type EventType =
   | 'window_minimized'
   | 'window_maximized'
   | 'window_restored'
+  | 'browser_side_panel'
+  | 'exam_window_focus_lost'
 
 export type Severity = 'low' | 'medium' | 'high'
 

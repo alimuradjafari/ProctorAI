@@ -15,6 +15,7 @@ from app.core.database import Base, get_db
 from app.main import create_app
 from app.models import *  # noqa: F401, F403  — register all models
 from app.services import websocket_manager
+from app.services import screen_review_manager as srm_module
 
 
 # SQLite in-memory with shared connection for testing
@@ -77,8 +78,15 @@ def client(db_session):
 def reset_websocket_manager():
     """Reset the in-memory WebSocket connection manager between tests."""
     websocket_manager.manager._connections.clear()
+    # Reset screen review manager state
+    srm_module.screen_review_manager._requests.clear()
+    srm_module.screen_review_manager._active_by_session.clear()
+    srm_module.screen_review_manager._participant_ws.clear()
     yield
     websocket_manager.manager._connections.clear()
+    srm_module.screen_review_manager._requests.clear()
+    srm_module.screen_review_manager._active_by_session.clear()
+    srm_module.screen_review_manager._participant_ws.clear()
 
 
 @pytest.fixture
@@ -103,4 +111,28 @@ def ws_session_local(db_session):
         return NoCloseSession()
 
     with patch("app.api.websocket.SessionLocal", test_session_local):
+        yield test_session_local
+
+
+@pytest.fixture
+def ws_session_local_with_screen_review(db_session):
+    """Patch SessionLocal in both websocket modules for screen review tests."""
+
+    class NoCloseSession:
+        def __init__(self):
+            self._session = db_session
+
+        def __getattr__(self, name):
+            return getattr(self._session, name)
+
+        def close(self):
+            pass
+
+    def test_session_local():
+        return NoCloseSession()
+
+    with (
+        patch("app.api.websocket.SessionLocal", test_session_local),
+        patch("app.api.screen_review_ws.SessionLocal", test_session_local),
+    ):
         yield test_session_local

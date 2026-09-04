@@ -53,6 +53,8 @@ export type EventType =
   | 'window_minimized'
   | 'window_maximized'
   | 'window_restored'
+  | 'browser_side_panel'
+  | 'exam_window_focus_lost'
 
 export type Severity = 'low' | 'medium' | 'high'
 
@@ -64,7 +66,7 @@ export interface MonitoringEvent {
   client_event_id: string | null
   metadata: Record<string, unknown>
   received_at: string
-  participant: {
+  participant?: {
     participant_session_id: string
     student_id: string
     student_name: string
@@ -102,3 +104,17 @@ export interface ParticipantRiskWsPayload {
   risk_level: RiskLevel
   total_events: number
 }
+
+// Screen Review (Phase 10.1) — re-export for type-safe WS handling
+export type {
+  ScreenReviewStatus,
+  ScreenReviewStatusPayload,
+  ScreenReviewOfferPayload,
+  ScreenReviewIceCandidatePayload,
+  ScreenReviewWsMessage,
+  ScreenReviewRequestMessage,
+  ScreenReviewAnswerMessage,
+  ScreenReviewIceCandidateMessage,
+  ScreenReviewStopMessage,
+  ScreenReviewOutgoingMessage,
+} from './screenReview'
