@@ -1,0 +1,9 @@
+{
+  "name": "proctorai-railway-iac",
+  "private": true,
+  "type": "module",
+  "description": "Railway Infrastructure as Code types for ProctorAI",
+  "dependencies": {
+    "railway": "latest"
+  }
+}

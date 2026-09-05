@@ -56,6 +56,9 @@ credentials/
 *.h5
 weights/
 models/
+# Backend SQLAlchemy models are application source code and must be tracked
+!backend/app/models/
+!backend/app/models/*.py
 
 # Evidence files (stored externally in production)
 evidence/
@@ -68,6 +71,9 @@ uploads/
 # Logs
 *.log
 logs/
+
+# Railway IaC
+.railway/node_modules/
 
 # Coverage
 htmlcov/
