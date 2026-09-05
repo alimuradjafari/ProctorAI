@@ -38,6 +38,10 @@ logger = logging.getLogger(__name__)
 _MAX_SDP_SIZE = 10_240  # 10 KB
 _MAX_CANDIDATE_SIZE = 1024  # 1 KB
 
+# Total incoming message size limit — oversized frames are ignored so the
+# receive loop survives and the connection stays usable
+_MAX_WS_MESSAGE_SIZE = 65_536  # 64 KB
+
 # Authentication timeout in seconds — unauthenticated connections are closed
 WS_AUTH_TIMEOUT_SECONDS = 10
 
@@ -122,6 +126,9 @@ async def monitoring_session_ws(websocket: WebSocket, monitoring_session_id: int
         while True:
             try:
                 data = await websocket.receive_text()
+
+                if len(data) > _MAX_WS_MESSAGE_SIZE:
+                    continue  # ignore oversized messages
 
                 if data == "ping":
                     await websocket.send_text("pong")

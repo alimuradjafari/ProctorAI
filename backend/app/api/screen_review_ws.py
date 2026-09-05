@@ -17,6 +17,7 @@ Security:
 """
 
 import asyncio
+import json
 import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -37,6 +38,10 @@ WS_AUTH_TIMEOUT_SECONDS = 10
 # SDP size limits
 MAX_SDP_SIZE = 10_240  # 10 KB
 MAX_CANDIDATE_SIZE = 1024  # 1 KB
+
+# Total incoming message size limit — oversized frames are ignored so the
+# signaling loop survives and the connection stays usable
+_MAX_WS_MESSAGE_SIZE = 65_536  # 64 KB
 
 router = APIRouter()
 
@@ -123,11 +128,19 @@ async def participant_screen_review_ws(websocket: WebSocket):
         # --- Signaling phase ---
         while True:
             try:
-                data = await websocket.receive_json()
+                raw = await websocket.receive_text()
             except WebSocketDisconnect:
                 break
             except Exception:
                 break
+
+            if len(raw) > _MAX_WS_MESSAGE_SIZE:
+                continue
+
+            try:
+                data = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                continue
 
             if not isinstance(data, dict):
                 continue

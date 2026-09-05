@@ -839,5 +839,63 @@ def test_existing_event_types_still_work(client):
         assert resp.status_code == 201, f"Regression: {event_type} no longer accepted"
 
 
+# ==================== INPUT HARDENING TESTS (Phase 11) ====================
+
+
+# 44. oversized client_event_id rejected (422) — matches DB column String(255)
+def test_oversized_client_event_id_rejected(client):
+    token = register_and_login(client, INSTRUCTOR_A)
+    sid, exam_code = create_session_in_status(client, token, "live")
+    p_token, _ = get_participant_token(client, exam_code)
+
+    resp = submit_event(client, p_token, "tab_switch", client_event_id="x" * 256)
+    assert resp.status_code == 422
+
+
+# 45. boundary client_event_id (255 chars) accepted
+def test_boundary_client_event_id_accepted(client):
+    token = register_and_login(client, INSTRUCTOR_A)
+    sid, exam_code = create_session_in_status(client, token, "live")
+    p_token, _ = get_participant_token(client, exam_code)
+
+    boundary_id = "x" * 255
+    resp = submit_event(client, p_token, "tab_switch", client_event_id=boundary_id)
+    assert resp.status_code == 201
+    assert resp.json()["client_event_id"] == boundary_id
+
+
+# 46. empty metadata object accepted
+def test_empty_metadata_accepted(client):
+    token = register_and_login(client, INSTRUCTOR_A)
+    sid, exam_code = create_session_in_status(client, token, "live")
+    p_token, _ = get_participant_token(client, exam_code)
+
+    resp = submit_event(
+        client, p_token, "tab_switch", client_event_id="empty-meta-1", metadata={}
+    )
+    assert resp.status_code == 201
+    assert resp.json()["metadata"] == {}
+
+
+# 47. oversized WS message ignored — receive loop survives
+# 100 KB junk (over the 64 KB cap) must not kill the instructor WS loop:
+# a subsequent ping still gets its pong.
+def test_ws_oversized_message_ignored(client, ws_session_local):
+    token = register_and_login(client, INSTRUCTOR_A)
+    sid, exam_code = create_session_in_status(client, token, "live")
+
+    with client.websocket_connect(f"/ws/monitoring-sessions/{sid}") as ws:
+        ws.send_json({"type": "authenticate", "access_token": token})
+        auth_resp = ws.receive_json()
+        assert auth_resp["type"] == "authenticated"
+
+        # 100 KB of junk — far over the 64 KB message cap
+        ws.send_text("x" * (100 * 1024))
+
+        # The loop must survive: ping still gets a pong
+        ws.send_text("ping")
+        assert ws.receive_text() == "pong"
+
+
 # ==================== REGRESSION TESTS ====================
 # Verified by running full test suite

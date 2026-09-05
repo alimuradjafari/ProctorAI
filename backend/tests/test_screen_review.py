@@ -603,3 +603,106 @@ async def test_declined_allows_new_request(client, ws_session_local_with_screen_
     # Cancel timeouts
     if req2.timeout_task:
         req2.timeout_task.cancel()
+
+
+# ==================== CROSS-INSTRUCTOR SECURITY TESTS (Phase 11) ====================
+
+
+# 19. Instructor cannot request review for another instructor's participant
+def test_screen_review_request_cross_instructor_rejected(
+    client, ws_session_local_with_screen_review
+):
+    """Instructor A's WS requesting a review for a participant in instructor
+    B's session is rejected: participant not found in this session."""
+    token_a = register_and_login(client, INSTRUCTOR_A)
+    token_b = register_and_login(client, INSTRUCTOR_B)
+
+    # Participant belongs to instructor B's session
+    sid_b, exam_code_b = create_session_in_status(client, token_b, "live")
+    p_token_b, p_sid_b = get_participant_token(client, exam_code_b)
+
+    # Instructor A has their own live session
+    sid_a, _ = create_session_in_status(client, token_a, "live")
+
+    with client.websocket_connect(f"/ws/monitoring-sessions/{sid_a}") as ws:
+        ws.send_json({"type": "authenticate", "access_token": token_a})
+        ws.receive_json()  # authenticated
+
+        # Try to request review for B's participant from A's session socket
+        ws.send_json({
+            "type": "screen_review_request",
+            "participant_session_id": p_sid_b,
+        })
+
+        msg = ws.receive_json()
+        assert msg["type"] == "screen_review_status"
+        assert msg["status"] == "error"
+        assert msg["message"] == "Participant not found in this session"
+
+
+# 20. Instructor cannot answer another instructor's review
+def test_screen_review_answer_cross_instructor_not_relayed(
+    client, ws_session_local_with_screen_review
+):
+    """Instructor A sending screen_review_answer for instructor B's review is
+    silently dropped — the ownership check returns without relaying."""
+    token_a = register_and_login(client, INSTRUCTOR_A)
+    token_b = register_and_login(client, INSTRUCTOR_B)
+
+    sid_a, _ = create_session_in_status(client, token_a, "live")
+    sid_b, exam_code_b = create_session_in_status(client, token_b, "live")
+    p_token_b, p_sid_b = get_participant_token(client, exam_code_b)
+
+    # Instructor B's actual DB id (for the manager-direct review)
+    me_b = client.get("/api/auth/me", headers=auth_headers(token_b)).json()
+
+    # B creates an accepted review via the manager directly
+    loop = asyncio.new_event_loop()
+    mock_b_ws = AsyncMock()
+    req = loop.run_until_complete(
+        screen_review_manager.create_request(
+            monitoring_session_id=sid_b,
+            participant_session_id=p_sid_b,
+            instructor_id=me_b["id"],
+            instructor_ws=mock_b_ws,
+        )
+    )
+    assert req is not None
+    ok = loop.run_until_complete(
+        screen_review_manager.update_status(
+            req.screen_review_id, ScreenReviewStatus.ACCEPTED
+        )
+    )
+    assert ok is True
+
+    # Register a mock participant WS to observe any (wrongly) relayed answer
+    mock_p_ws = AsyncMock()
+    loop.run_until_complete(
+        screen_review_manager.register_participant_ws(p_sid_b, mock_p_ws)
+    )
+
+    try:
+        # Instructor A connects to their OWN session socket and tries to
+        # answer B's review
+        with client.websocket_connect(f"/ws/monitoring-sessions/{sid_a}") as ws:
+            ws.send_json({"type": "authenticate", "access_token": token_a})
+            ws.receive_json()  # authenticated
+
+            ws.send_json({
+                "type": "screen_review_answer",
+                "screen_review_id": req.screen_review_id,
+                "sdp": "v=0\r\nanswer",
+            })
+
+            # The answer was processed before this ping (FIFO); the loop
+            # must still be alive
+            ws.send_text("ping")
+            assert ws.receive_text() == "pong"
+
+        # Nothing was relayed to the participant and the review is untouched
+        mock_p_ws.send_json.assert_not_called()
+        assert req.status == ScreenReviewStatus.ACCEPTED
+    finally:
+        if req.timeout_task:
+            req.timeout_task.cancel()
+        loop.close()

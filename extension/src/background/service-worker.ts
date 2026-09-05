@@ -12,6 +12,12 @@ import {
   FOCUS_LOSS_CONFIRM_MS,
   type FocusDestination,
 } from '../browser/ExamWindowFocusDetector'
+import {
+  parseConsentMessage,
+  parseOfferMessage,
+  parseIceCandidateMessage,
+  parseStoppedMessage,
+} from '../screenReview/ScreenReviewMessages'
 
 const STORAGE_KEY = 'proctorai_session'
 const CAMERA_ENABLED_KEY = 'camera_monitoring_enabled'
@@ -313,9 +319,11 @@ let focusInitGeneration = 0
  * participant armed monitoring from — never from content scripts, the popup,
  * or client payloads.
  *
- * If the exam window does not currently hold focus, the detector starts in
- * its 'fired' state: the pre-existing focus-loss episode is never reported,
- * and detection re-arms only after the exam window regains focus.
+ * If the exam window does not currently hold focus, the detector begins with
+ * the pre-existing focus-loss episode as a pending candidate dated at start
+ * time: after the startup grace and confirmation window, exactly ONE event
+ * fires for that episode. No Chrome focus events arrive while the student
+ * stays away, so the synthetic-sample timer chain is kicked here.
  */
 async function initFocusMonitoring(): Promise<void> {
   const generation = ++focusInitGeneration
@@ -355,6 +363,14 @@ async function initFocusMonitoring(): Promise<void> {
   monitoredTabId = tabId
   examWindowId = windowId
   focusDetector = new ExamWindowFocusDetector(now, examFocused)
+
+  // Initial-away: the detector begins with the pre-existing episode as a
+  // pending candidate. No Chrome focus events will arrive while the student
+  // stays away, so kick the synthetic-sample timer chain here — it keeps
+  // itself alive afterwards via isConfirming() in handleFocusSample().
+  if (focusDetector.isConfirming()) {
+    scheduleFocusConfirmCheck()
+  }
 
   if (DEBUG_WINDOW_FOCUS) {
     console.debug(
@@ -1343,8 +1359,9 @@ chrome.runtime.onMessage.addListener(
         //
         // STRICT VALIDATION (tab security):
         //   1. sender.tab must exist (real content-script sender)
-        //   2. browser monitoring must be armed (participant session exists)
-        //   3. event_type must be exactly 'browser_side_panel'
+        //   2. the sender must be the monitored exam tab
+        //   3. browser monitoring must be armed (participant session exists)
+        //   4. event_type must be exactly 'browser_side_panel'
         //
         // Trusted IDs (participant/session/instructor), severity, and risk
         // data are NEVER read from the message — the server owns all of
@@ -1353,6 +1370,8 @@ chrome.runtime.onMessage.addListener(
         if (
           sender.tab &&
           sender.tab.id !== undefined &&
+          monitoredTabId !== null &&
+          sender.tab.id === monitoredTabId &&
           listenersAttached &&
           event &&
           typeof event === 'object' &&
@@ -1392,20 +1411,19 @@ chrome.runtime.onMessage.addListener(
 
       else if (message.type === 'SCREEN_REVIEW_CONSENT') {
         // Content script overlay reports student consent
-        const reviewId = message.screen_review_id as string
-        const accepted = message.accepted as boolean
+        const consent = parseConsentMessage(message)
 
-        if (!reviewId || reviewId !== activeScreenReviewId) {
+        if (consent === null || consent.screen_review_id !== activeScreenReviewId) {
           sendResponse({ ok: false })
           return true
         }
 
-        if (accepted) {
+        if (consent.accepted) {
           // Student accepted — start desktop capture
-          startDesktopCapture(reviewId)
+          startDesktopCapture(consent.screen_review_id)
         } else {
           // Student declined
-          sendScreenReviewDeclined(reviewId)
+          sendScreenReviewDeclined(consent.screen_review_id)
         }
 
         sendResponse({ ok: true })
@@ -1413,13 +1431,13 @@ chrome.runtime.onMessage.addListener(
 
       else if (message.type === 'SCREEN_REVIEW_STOP_FROM_STUDENT') {
         // Student clicked "Stop" in the active indicator
-        const reviewId = message.screen_review_id as string
-        if (reviewId === activeScreenReviewId) {
+        const stopped = parseStoppedMessage(message)
+        if (stopped !== null && stopped.screen_review_id === activeScreenReviewId) {
           // Send stopped message to backend
           if (participantScreenReviewWs && participantScreenReviewWs.readyState === WebSocket.OPEN) {
             participantScreenReviewWs.send(JSON.stringify({
               type: 'screen_review_stopped',
-              screen_review_id: reviewId,
+              screen_review_id: stopped.screen_review_id,
             }))
           }
           cleanupScreenReview()
@@ -1429,15 +1447,14 @@ chrome.runtime.onMessage.addListener(
 
       else if (message.type === 'SCREEN_REVIEW_OFFER') {
         // Offscreen generated SDP offer — relay to backend
-        const reviewId = message.screen_review_id as string
-        const sdp = message.sdp as string
+        const offer = parseOfferMessage(message)
 
-        if (reviewId && sdp && participantScreenReviewWs &&
+        if (offer !== null && participantScreenReviewWs &&
             participantScreenReviewWs.readyState === WebSocket.OPEN) {
           participantScreenReviewWs.send(JSON.stringify({
             type: 'screen_review_offer',
-            screen_review_id: reviewId,
-            sdp,
+            screen_review_id: offer.screen_review_id,
+            sdp: offer.sdp,
           }))
         }
         sendResponse({ ok: true })
@@ -1445,17 +1462,16 @@ chrome.runtime.onMessage.addListener(
 
       else if (message.type === 'SCREEN_REVIEW_ICE_CANDIDATE') {
         // Offscreen generated ICE candidate — relay to backend
-        const reviewId = message.screen_review_id as string
-        const candidate = message.candidate as string
+        const ice = parseIceCandidateMessage(message)
 
-        if (reviewId && candidate && participantScreenReviewWs &&
+        if (ice !== null && participantScreenReviewWs &&
             participantScreenReviewWs.readyState === WebSocket.OPEN) {
           participantScreenReviewWs.send(JSON.stringify({
             type: 'screen_review_ice_candidate',
-            screen_review_id: reviewId,
-            candidate,
-            sdpMid: message.sdpMid ?? null,
-            sdpMLineIndex: message.sdpMLineIndex ?? null,
+            screen_review_id: ice.screen_review_id,
+            candidate: ice.candidate,
+            sdpMid: ice.sdpMid,
+            sdpMLineIndex: ice.sdpMLineIndex,
           }))
         }
         sendResponse({ ok: true })
@@ -1463,12 +1479,12 @@ chrome.runtime.onMessage.addListener(
 
       else if (message.type === 'SCREEN_REVIEW_STOPPED') {
         // Offscreen screen share ended (track ended by user or error)
-        const reviewId = message.screen_review_id as string
-        if (reviewId === activeScreenReviewId) {
+        const stopped = parseStoppedMessage(message)
+        if (stopped !== null && stopped.screen_review_id === activeScreenReviewId) {
           if (participantScreenReviewWs && participantScreenReviewWs.readyState === WebSocket.OPEN) {
             participantScreenReviewWs.send(JSON.stringify({
               type: 'screen_review_stopped',
-              screen_review_id: reviewId,
+              screen_review_id: stopped.screen_review_id,
             }))
           }
           cleanupScreenReview()

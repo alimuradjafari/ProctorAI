@@ -38,6 +38,13 @@
 //   samples are event-driven — a swallowed candidate would receive no further
 //   samples to recover from.
 //
+// INITIAL AWAY:
+//   If monitoring starts while the exam window already lacks focus, the
+//   pre-existing episode is treated as a candidate dated at startTime:
+//   grace + confirmation apply, then exactly ONE event fires for that
+//   episode. No duplicate is emitted if the student stays away, and normal
+//   recovery re-arms the detector once focus returns.
+//
 // LAZY RECOVERY COMPLETION:
 //   Recovery is completed on the NEXT sample if >= RECOVERY_MS has elapsed,
 //   whatever that sample is. Focus returning produces exactly one sample and
@@ -97,10 +104,11 @@ export class ExamWindowFocusDetector {
   /**
    * @param startTime - Detector start timestamp (ms)
    * @param initiallyFocused - Whether the exam window actually had focus
-   *   when monitoring started. When false, the detector starts in the
-   *   'fired' state: the pre-existing focus-loss episode predates monitoring
-   *   and is never reported — a new episode is only detected after the exam
-   *   window regains focus and the detector re-arms.
+   *   when monitoring started. When false, the pre-existing focus-loss
+   *   episode is treated as a candidate dated at startTime: the startup
+   *   grace applies, then exactly ONE event fires once the episode has
+   *   persisted past grace + confirmation. No duplicate is emitted for the
+   *   same episode, and normal recovery re-arms the detector afterwards.
    */
   constructor(startTime: number, initiallyFocused: boolean) {
     this.startTime = startTime
@@ -219,7 +227,15 @@ export class ExamWindowFocusDetector {
     this.candidateStart = null
     this.recoveryStart = null
     this.awayDestination = null
-    this.state = initiallyFocused ? 'focused' : 'fired'
+    if (initiallyFocused) {
+      this.state = 'focused'
+    } else {
+      // Pre-existing focus loss: treat as candidate starting at startTime.
+      // Grace applies, then ONE event fires after grace + confirmation;
+      // no duplicates; recovery re-arms normally.
+      this.state = 'candidate'
+      this.candidateStart = this.startTime
+    }
   }
 
   private buildEvent(

@@ -16,6 +16,7 @@ from app.main import create_app
 from app.models import *  # noqa: F401, F403  — register all models
 from app.services import websocket_manager
 from app.services import screen_review_manager as srm_module
+from app.services.rate_limiter import login_rate_limiter
 
 
 # SQLite in-memory with shared connection for testing
@@ -82,11 +83,14 @@ def reset_websocket_manager():
     srm_module.screen_review_manager._requests.clear()
     srm_module.screen_review_manager._active_by_session.clear()
     srm_module.screen_review_manager._participant_ws.clear()
+    # Reset login rate limiter (prevents cross-test lockout pollution)
+    login_rate_limiter.reset()
     yield
     websocket_manager.manager._connections.clear()
     srm_module.screen_review_manager._requests.clear()
     srm_module.screen_review_manager._active_by_session.clear()
     srm_module.screen_review_manager._participant_ws.clear()
+    login_rate_limiter.reset()
 
 
 @pytest.fixture

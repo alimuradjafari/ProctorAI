@@ -235,17 +235,44 @@ describe('ExamWindowFocusDetector', () => {
 
   // ---- Additional coverage beyond the spec minimum ----
 
-  it('17. monitoring starts while unfocused — pre-existing episode never reported', () => {
+  it('17. monitoring starts while unfocused — ONE event for the pre-existing episode', () => {
     const det = new ExamWindowFocusDetector(T0, false)
     // The student was already outside the exam window when monitoring began:
-    // that episode predates monitoring and must not produce an event
-    for (let t = 200; t <= 6000; t += 400) {
+    // the episode is a candidate dated at startTime, so the SW's timer-chain
+    // kick condition (isConfirming at construction) holds
+    assert.ok(det.isConfirming())
+    // Samples during grace accrue but cannot fire
+    for (let t = 200; t <= 1400; t += 400) {
       assert.equal(det.processSample(outside, T0 + t).length, 0)
     }
+    // First post-grace sample: persistence (from startTime) is past
+    // confirmation — exactly ONE event fires
+    const fired = det.processSample(outside, T0 + 2000)
+    assert.equal(fired.length, 1)
+    assert.equal(fired[0].event_type, 'exam_window_focus_lost')
+    assert.equal(fired[0].metadata.focus_destination, 'outside_chrome')
+    assert.equal(fired[0].metadata.persistence_ms, 2000)
+    // Continued sampling of the same episode — no duplicates
+    for (let t = 2400; t <= 4000; t += 400) {
+      assert.equal(det.processSample(outside, T0 + t).length, 0)
+    }
+    assert.equal(det.isConfirming(), false)
     // Exam window regains focus, stays focused long enough to re-arm
-    det.processSample(exam, T0 + 7000)
+    det.processSample(exam, T0 + 4400)
+    det.processSample(exam, T0 + 5600) // lazy recovery completion (>= 1000 ms)
     // A genuinely NEW loss is detected normally
-    const events = fireEpisode(det, 9000)
+    const events = fireEpisode(det, 7000)
+    assert.equal(events.event_type, 'exam_window_focus_lost')
+  })
+
+  it('17b. initial-away with early focus return — zero events, detector armed', () => {
+    const det = new ExamWindowFocusDetector(T0, false)
+    // Student returns to the exam window during grace, before the
+    // pre-existing episode could be confirmed — candidate cancelled
+    assert.equal(det.processSample(exam, T0 + 800).length, 0)
+    assert.equal(det.isConfirming(), false)
+    // Detector is armed: a genuinely NEW sustained loss fires normally
+    const events = fireEpisode(det, 3000)
     assert.equal(events.event_type, 'exam_window_focus_lost')
   })
 

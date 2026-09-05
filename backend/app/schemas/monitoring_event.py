@@ -31,6 +31,13 @@ class EventSubmissionRequest(BaseModel):
             raise ValueError("confidence must be between 0.0 and 1.0")
         return v
 
+    @field_validator("client_event_id")
+    @classmethod
+    def validate_client_event_id(cls, v: str | None) -> str | None:
+        if v is not None and len(v) > 255:
+            raise ValueError("client_event_id must be at most 255 characters")
+        return v
+
     @model_validator(mode="after")
     def validate_metadata_size(self) -> "EventSubmissionRequest":
         if self.metadata is not None:

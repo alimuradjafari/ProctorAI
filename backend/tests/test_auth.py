@@ -140,3 +140,63 @@ def test_invalid_token_rejected(client):
         headers={"Authorization": "Bearer invalid.token.here"},
     )
     assert response.status_code == 401
+
+
+# --- 11. Login rate limiting (Phase 11) ---
+
+
+def test_login_rate_limit_lockout(client):
+    """10 failed logins -> 11th attempt returns 429 even with correct password."""
+    register_instructor(client)
+
+    for _ in range(10):
+        response = login_instructor(client, password="WrongPassword123!")
+        assert response.status_code == 401
+
+    # 11th attempt — correct password, but the key is locked out
+    response = login_instructor(client)
+    assert response.status_code == 429
+    assert "too many" in response.json()["detail"].lower()
+
+
+def test_login_rate_limit_success_resets_window(client):
+    """A successful login clears the failure window for that email."""
+    register_instructor(client)
+
+    # 5 failures (below the 10-failure threshold)
+    for _ in range(5):
+        login_instructor(client, password="WrongPassword123!")
+
+    # Successful login resets the window
+    response = login_instructor(client)
+    assert response.status_code == 200
+
+    # 5 more failures — still under the threshold, so a correct login works
+    for _ in range(5):
+        login_instructor(client, password="WrongPassword123!")
+    response = login_instructor(client)
+    assert response.status_code == 200
+
+
+def test_login_rate_limit_per_email_isolation(client):
+    """A different email is unaffected by another email's lockout."""
+    register_instructor(client)  # ahmad@university.edu
+
+    other = {
+        "full_name": "Prof. Sara",
+        "email": "sara@university.edu",
+        "password": "AnotherPass456!",
+    }
+    register_instructor(client, other)
+
+    # Lock out the first instructor's email
+    for _ in range(10):
+        login_instructor(client, password="WrongPassword123!")
+    response = login_instructor(client)
+    assert response.status_code == 429
+
+    # The second instructor logs in normally
+    response = login_instructor(
+        client, email=other["email"], password=other["password"]
+    )
+    assert response.status_code == 200

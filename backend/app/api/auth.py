@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.services.auth_service import AuthService
+from app.services.rate_limiter import login_rate_limiter
 from app.auth.dependencies import get_current_instructor
 from app.schemas.auth import (
     InstructorRegisterRequest,
@@ -44,22 +45,39 @@ def register(
 @router.post("/login", response_model=TokenResponse)
 def login(
     request: InstructorLoginRequest,
+    http_request: Request,
     db: Session = Depends(get_db),
 ):
     """Authenticate and receive access + refresh tokens."""
+    # Rate-limit key: client host + lowercased email. The email component
+    # keeps distinct accounts independent; per-IP keying alone is
+    # unreliable behind proxies, so the host is only a tiebreaker.
+    client_host = (
+        http_request.client.host if http_request.client else "unknown"
+    )
+    rate_key = f"{client_host}:{request.email.lower()}"
+
+    if login_rate_limiter.is_blocked(rate_key):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many login attempts. Try again later.",
+        )
+
     service = AuthService(db)
     try:
         result = service.login(
             email=request.email,
             password=request.password,
         )
-        return result
     except ValueError:
+        login_rate_limiter.record_failure(rate_key)
         # Generic error — do not reveal whether account exists
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
         )
+    login_rate_limiter.record_success(rate_key)
+    return result
 
 
 @router.post("/refresh", response_model=RefreshTokenResponse)
