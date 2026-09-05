@@ -148,6 +148,12 @@ function Register() {
             </Link>
           </p>
         </div>
+
+        <p className="text-xs text-gray-400 text-center mt-6">
+          <Link to="/privacy" className="hover:text-primary-600 transition-colors">
+            Privacy Policy
+          </Link>
+        </p>
       </div>
     </div>
   )

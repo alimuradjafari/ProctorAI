@@ -7,6 +7,7 @@ import Register from './pages/Register'
 import Dashboard from './pages/Dashboard'
 import CreateSession from './pages/CreateSession'
 import SessionDetail from './pages/SessionDetail'
+import Privacy from './pages/Privacy'
 
 function App() {
   return (
@@ -14,6 +15,7 @@ function App() {
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
+        <Route path="/privacy" element={<Privacy />} />
         <Route
           path="/"
           element={
