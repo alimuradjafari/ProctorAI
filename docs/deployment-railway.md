@@ -126,11 +126,11 @@ Railway managed MySQL 8.x. Provisioned automatically by the IaC helper.
 | `APP_ENV` | `production` | IaC |
 | `LOG_LEVEL` | `INFO` | IaC |
 | `DEBUG` | `false` | IaC |
-| `DB_HOST` | `${{proctorai-mysql.MYSQLHOST}}` | IaC (Railway ref) |
-| `DB_PORT` | `${{proctorai-mysql.MYSQLPORT}}` | IaC (Railway ref) |
-| `DB_USER` | `${{proctorai-mysql.MYSQLUSER}}` | IaC (Railway ref) |
-| `DB_PASSWORD` | `${{proctorai-mysql.MYSQLPASSWORD}}` | IaC (Railway ref) |
-| `DB_NAME` | `${{proctorai-mysql.MYSQLDATABASE}}` | IaC (Railway ref) |
+| `DB_HOST` | `mysql.railway.internal` | Railway MySQL private host |
+| `DB_PORT` | `3306` | Railway MySQL port |
+| `DB_USER` | `root` | Railway MySQL user |
+| `DB_PASSWORD` | *(copy from MySQL service MYSQLPASSWORD)* | Railway MySQL password |
+| `DB_NAME` | `railway` | Railway MySQL database |
 | `JWT_SECRET_KEY` | *(generate 64-char hex)* | **Dashboard — secret** |
 | `CORS_ORIGINS` | `https://<FRONTEND_DOMAIN>` | Dashboard (after deploy) |
 | `FRONTEND_URL` | `https://<FRONTEND_DOMAIN>` | Dashboard (after deploy) |

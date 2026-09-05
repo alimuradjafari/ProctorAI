@@ -6,7 +6,22 @@
  *
  * This script does NOT inspect page content, exam questions, form fields,
  * clipboard, or send page text. It only renders UI for screen review consent.
+ *
+ * Initialization is guarded by a global marker so that a second injection
+ * (e.g. via chrome.scripting.executeScript fallback) is safely a no-op
+ * instead of causing duplicate top-level declarations.
  */
+
+// Idempotency guard: if this script was already loaded (by manifest content_scripts
+// or a previous programmatic injection), skip re-initialization entirely.
+// This MUST be the very first statement before any let/const declarations.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+if ((window as any).__proctorai_overlay_ready) {
+  console.log('[ProctorAI] Screen review overlay already initialized — skipping re-execution')
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+} else {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+;(window as any).__proctorai_overlay_ready = true
 
 console.log('[ProctorAI] Screen review overlay content script loaded')
 
@@ -355,3 +370,4 @@ chrome.runtime.onMessage.addListener((message) => {
 })
 
 console.log('[ProctorAI] Screen review overlay listener registered')
+} // end of idempotency else block

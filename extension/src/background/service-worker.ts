@@ -1025,20 +1025,51 @@ async function findInjectableTabInExamWindow(): Promise<number | null> {
 }
 
 /**
- * Programmatically inject the screen-review overlay content script
- * into a tab and then send a message to it.
+ * Probe the target tab for an existing screen-review overlay script instance.
+ * Returns true if the global initialization marker is present.
+ */
+async function isOverlayAlreadyLoaded(tabId: number): Promise<boolean> {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      func: () => !!(window as any).__proctorai_overlay_ready,
+    })
+    return results?.[0]?.result === true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Conditionally inject the screen-review overlay content script into a tab
+ * (only if no instance is already running) and then send a message to it.
+ *
+ * The overlay is normally auto-injected by the manifest content_scripts entry.
+ * Programmatic injection is a fallback for tabs where the manifest injection
+ * did not succeed (e.g. extension was updated, or a timing race).
+ *
+ * An initialization marker (__proctorai_overlay_ready) prevents duplicate
+ * top-level declarations when the script runs a second time.
  */
 async function injectAndSend(
   tabId: number,
   message: Record<string, unknown>
 ): Promise<void> {
-  await chrome.scripting.executeScript({
-    target: { tabId },
-    files: ['screen-review-overlay.js'],
-  })
-  console.log('[ProctorAI] Injected screen-review-overlay.js into tab', tabId)
-  // Brief delay for listener registration after injection
-  await new Promise((resolve) => setTimeout(resolve, 100))
+  const alreadyLoaded = await isOverlayAlreadyLoaded(tabId)
+
+  if (!alreadyLoaded) {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['screen-review-overlay.js'],
+    })
+    console.log('[ProctorAI] Injected screen-review-overlay.js into tab', tabId)
+    // Brief delay for listener registration after injection
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  } else {
+    console.log('[ProctorAI] Overlay already loaded in tab, skipping injection:', tabId)
+  }
+
   await chrome.tabs.sendMessage(tabId, message)
 }
 
