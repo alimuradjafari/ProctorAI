@@ -1,4 +1,5 @@
 import { apiClient } from './api'
+import { WS_BASE_URL } from '../lib/config'
 import type {
   MonitoringSession,
   RosterEntry,
@@ -109,5 +110,5 @@ export async function getSessionRisk(sessionId: number): Promise<ParticipantRisk
   return data.participants
 }
 
-// WebSocket base URL for monitoring events (derived from API base)
-export const WS_BASE_URL = 'ws://localhost:8000'
+// Re-export WS_BASE_URL so existing imports from this module continue to work.
+export { WS_BASE_URL }

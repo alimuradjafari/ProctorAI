@@ -1,6 +1,7 @@
 // ProctorAI API Service Abstraction
 // Centralizes all backend communication
 
+import { API_BASE_URL } from '../lib/config'
 import type {
   JoinRequest,
   JoinResponse,
@@ -9,12 +10,10 @@ import type {
   EventResponse,
 } from '../types'
 
-const API_BASE_URL = 'http://localhost:8000/api'
-
 class ApiService {
   private baseUrl: string
 
-  constructor(baseUrl: string) {
+  constructor(baseUrl: string = API_BASE_URL) {
     this.baseUrl = baseUrl
   }
 
@@ -80,4 +79,4 @@ class ApiService {
   }
 }
 
-export const apiService = new ApiService(API_BASE_URL)
+export const apiService = new ApiService()

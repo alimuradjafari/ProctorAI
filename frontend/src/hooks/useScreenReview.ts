@@ -9,6 +9,7 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react'
 import type { MutableRefObject } from 'react'
+import { API_BASE_URL } from '../lib/config'
 import type {
   ScreenReviewStatus,
   ScreenReviewStatusPayload,
@@ -35,9 +36,8 @@ interface UseScreenReviewReturn {
   resetStatus: () => void
 }
 
-// Empty ICE servers for local development.
-// Phase 12 can add STUN/TURN servers via config.
-const ICE_SERVERS: RTCIceServer[] = []
+// ICE servers are fetched from the backend at runtime (/api/config/webrtc).
+// This allows TURN credentials to be configured without redeploying the frontend.
 
 /**
  * Map backend status strings to frontend ScreenReviewStatus.
@@ -109,6 +109,25 @@ export function useScreenReview(
   const pcRef = useRef<RTCPeerConnection | null>(null)
   const statusRef = useRef<ScreenReviewStatus>('idle')
   const reviewIdRef = useRef<string | null>(null)
+  const iceServersRef = useRef<RTCIceServer[]>([])
+
+  // Fetch ICE servers from backend on mount (STUN/TURN config).
+  useEffect(() => {
+    let cancelled = false
+    fetch(`${API_BASE_URL}/config/webrtc`)
+      .then((res) => (res.ok ? res.json() : { ice_servers: [] }))
+      .then((data) => {
+        if (!cancelled && Array.isArray(data.ice_servers)) {
+          iceServersRef.current = data.ice_servers
+        }
+      })
+      .catch(() => {
+        // Silently fall back to empty (local dev without backend).
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // Keep refs in sync
   useEffect(() => {
@@ -262,7 +281,7 @@ export function useScreenReview(
       cleanupPc()
 
       const pc = new RTCPeerConnection({
-        iceServers: ICE_SERVERS.length > 0 ? ICE_SERVERS : undefined,
+        iceServers: iceServersRef.current.length > 0 ? iceServersRef.current : undefined,
       })
       pcRef.current = pc
 

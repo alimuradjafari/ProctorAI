@@ -6,6 +6,7 @@
 // Camera processing runs in a separate MV3 offscreen document.
 
 import { apiService } from '../services/api'
+import { WS_BASE_URL, API_BASE_URL } from '../lib/config'
 import type { ParticipantSession, EventSubmissionRequest, EventType } from '../types'
 import {
   ExamWindowFocusDetector,
@@ -66,7 +67,24 @@ let participantScreenReviewWs: WebSocket | null = null
 /** Whether the participant screen review WS is connecting. */
 let screenReviewWsConnecting = false
 
-const WS_BASE_URL = 'ws://localhost:8000'
+/**
+ * Fetch ICE servers from the backend for WebRTC screen sharing.
+ * Returns an empty array if the backend is unavailable (local dev fallback).
+ */
+async function fetchIceServers(): Promise<RTCIceServer[]> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/config/webrtc`)
+    if (res.ok) {
+      const data = await res.json()
+      if (Array.isArray(data.ice_servers)) {
+        return data.ice_servers
+      }
+    }
+  } catch {
+    // Backend unavailable — fall back to empty (local dev without STUN/TURN).
+  }
+  return []
+}
 
 // ---------------------------------------------------------------------------
 // Session helpers
@@ -1052,14 +1070,16 @@ function startDesktopCapture(reviewId: string): void {
           return
         }
 
-        // Send the short-lived stream ID immediately to the offscreen document
-        chrome.runtime
-          .sendMessage({
-            target: 'offscreen',
-            type: 'START_SCREEN_SHARE',
-            streamId,
-            screen_review_id: reviewId,
-            iceServers: [], // Local dev; Phase 12 can add STUN/TURN
+        // Fetch ICE servers from backend, then send to offscreen document.
+        fetchIceServers()
+          .then((iceServers) => {
+            return chrome.runtime.sendMessage({
+              target: 'offscreen',
+              type: 'START_SCREEN_SHARE',
+              streamId,
+              screen_review_id: reviewId,
+              iceServers,
+            })
           })
           .catch((err) => {
             console.error(
