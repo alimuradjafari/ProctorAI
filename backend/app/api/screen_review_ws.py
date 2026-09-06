@@ -147,8 +147,12 @@ async def participant_screen_review_ws(websocket: WebSocket):
 
             msg_type = data.get("type")
 
-            # --- Accept / Decline ---
-            if msg_type in ("screen_review_accepted", "screen_review_declined"):
+            # --- Accept / Decline / Fail ---
+            if msg_type in (
+                "screen_review_accepted",
+                "screen_review_declined",
+                "screen_review_failed",
+            ):
                 review_id = data.get("screen_review_id")
                 if not isinstance(review_id, str) or not review_id:
                     continue
@@ -188,6 +192,27 @@ async def participant_screen_review_ws(websocket: WebSocket):
                             "participant_session_id": (
                                 request.participant_session_id
                             ),
+                        },
+                    )
+                elif msg_type == "screen_review_failed":
+                    # Technical failure or picker cancellation AFTER accept.
+                    # Only valid from ACCEPTED state (REQUESTED→ACCEPTED→FAILED).
+                    if request.status != ScreenReviewStatus.ACCEPTED:
+                        continue
+                    reason = data.get("reason", "unknown")
+                    await screen_review_manager.update_status(
+                        review_id, ScreenReviewStatus.FAILED
+                    )
+                    await screen_review_manager.send_to_instructor(
+                        request,
+                        {
+                            "type": "screen_review_status",
+                            "screen_review_id": review_id,
+                            "status": "failed",
+                            "participant_session_id": (
+                                request.participant_session_id
+                            ),
+                            "message": reason,
                         },
                     )
                 else:  # declined

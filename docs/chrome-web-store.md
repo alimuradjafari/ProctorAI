@@ -51,8 +51,7 @@ The ZIP root directly contains `manifest.json` — no parent folder wrapping.
 | Permission       | Justification |
 |------------------|---------------|
 | `storage`        | Persist participant session tokens and camera monitoring preferences across extension restarts. |
-| `offscreen`      | Run long-lived camera MediaStream and MediaPipe ML inference in an offscreen document (required by MV3 — service workers cannot hold media streams). |
-| `desktopCapture` | Request screen sharing via `chrome.desktopCapture.chooseDesktopMedia(['screen'])` for live proctor screen review. Always requires explicit user consent through Chrome's built-in picker. |
+| `offscreen`      | Run long-lived camera MediaStream, optional screen-capture MediaStream, and MediaPipe ML inference in an offscreen document (required by MV3 — service workers cannot hold media streams). Also hosts the WebRTC peer connection for live screen sharing. |
 | `scripting`      | Inject the screen-review consent overlay content script into the active tab when a proctor initiates a screen review request. |
 
 ### Host Permissions
@@ -105,7 +104,7 @@ All WASM files are bundled locally within the extension (`dist/wasm/`) — no re
 Screen sharing uses a **two-layer consent** model:
 
 1. **Extension consent dialog** — A Shadow DOM overlay presents a clear explanation of what will be shared, with explicit "Share Entire Screen" and "Decline" buttons. Privacy notes state: "No microphone audio" and "screen is not recorded or stored."
-2. **Chrome desktop picker** — After the user consents in the extension, Chrome's built-in `chooseDesktopMedia` picker appears, giving the user final control over which screen to share.
+2. **Chrome native picker** — After the user consents in the extension, Chrome's built-in `getDisplayMedia()` picker appears in the offscreen document, giving the user final control over which screen/window/tab to share.
 
 Screen sharing is **always initiated by the proctor** and **always requires participant approval**. The participant can decline at any time.
 
@@ -126,7 +125,7 @@ This extension is published as **Unlisted** on the Chrome Web Store:
    - **Description**: Detailed description including single-purpose statement.
    - **Category**: Education.
    - **Language**: English.
-4. Provide a **Privacy Policy URL** (required for extensions that use `desktopCapture` and camera).
+4. Provide a **Privacy Policy URL** (required for extensions that use camera and screen sharing).
 5. Fill in the **Privacy Practices** tab:
    - Declare that the extension does not collect personal data from pages.
    - Declare that camera/screen data is processed locally and not stored.
@@ -139,7 +138,7 @@ This extension is published as **Unlisted** on the Chrome Web Store:
 |--------------------|--------------------------------|-----------------------------------|
 | `host_permissions` | `localhost:8000`, `127.0.0.1:8000` | `proctorai-production-f994.up.railway.app` only |
 | `icons`            | Same 4 PNGs                    | Same 4 PNGs                       |
-| `permissions`      | 4 permissions                  | 4 permissions (unchanged)         |
+| `permissions`      | 3 permissions                  | 3 permissions (unchanged)         |
 | `version`          | 0.2.0                          | 0.2.0                             |
 | `manifest_version` | 3                              | 3                                 |
 

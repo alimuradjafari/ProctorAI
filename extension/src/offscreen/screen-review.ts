@@ -1,26 +1,18 @@
 /**
  * Screen review module — runs inside the offscreen document.
  *
- * Handles screen capture via chrome.desktopCapture and WebRTC peer
- * connection for live screen sharing. Completely independent from
- * the camera monitoring pipeline.
+ * Handles screen capture via navigator.mediaDevices.getDisplayMedia()
+ * and WebRTC peer connection for live screen sharing.
+ * Completely independent from the camera monitoring pipeline.
+ *
+ * Architecture (MV3):
+ *   The offscreen document calls getDisplayMedia() directly — this is the
+ *   Chrome-recommended pattern for MV3 extensions.  The service worker does
+ *   NOT use chrome.desktopCapture (which requires targetTab in SW context).
  *
  * IMPORTANT: screenShareStream and cameraStream are separate MediaStreams.
  * Stopping one MUST NOT affect the other.
  */
-
-// ---------------------------------------------------------------------------
-// Chromium-specific media constraint types (narrower than `any`)
-// ---------------------------------------------------------------------------
-
-/** Chromium-specific mandatory constraints for desktop capture. */
-interface ChromiumDesktopConstraints {
-  chromeMediaSource: 'desktop'
-  chromeMediaSourceId: string
-  maxWidth?: number
-  maxHeight?: number
-  maxFrameRate?: number
-}
 
 // ---------------------------------------------------------------------------
 // Module state
@@ -32,57 +24,83 @@ let screenReviewId: string | null = null
 let screenReviewActive = false
 
 // ---------------------------------------------------------------------------
-// Screen capture
+// Screen capture (getDisplayMedia — MV3 recommended pattern)
 // ---------------------------------------------------------------------------
 
 /**
- * Start screen sharing using a Chrome desktopCapture stream ID.
+ * Start screen sharing using navigator.mediaDevices.getDisplayMedia().
  *
- * Creates a MediaStream from the desktop source, applies content hint,
- * sets up a WebRTC peer connection, and generates an SDP offer.
+ * This is the Chrome-recommended MV3 pattern: the offscreen document calls
+ * getDisplayMedia() directly instead of the service worker using
+ * chrome.desktopCapture.chooseDesktopMedia() (which requires targetTab in
+ * SW context and is scoped to the target tab origin).
  *
- * @param streamId  Temporary stream ID from chrome.desktopCapture
+ * The returned MediaStream is used directly in the offscreen document's
+ * WebRTC peer connection — no streamId relay needed.
+ *
+ * Error differentiation:
+ *   - NotAllowedError → student cancelled Chrome's native picker
+ *     → sends SCREEN_REVIEW_CAPTURE_FAILED with reason 'picker_cancelled'
+ *   - Other errors → technical failure
+ *     → sends SCREEN_REVIEW_CAPTURE_FAILED with reason 'capture_failed'
+ *
  * @param iceServers  ICE server configuration for RTCPeerConnection
  * @returns The SDP offer string to send to the instructor
  */
-export async function startScreenShare(
-  streamId: string,
+export async function startScreenCapture(
   iceServers: RTCIceServer[]
 ): Promise<string> {
   if (screenReviewActive) {
     throw new Error('Screen share already active')
   }
 
-  // Create screen MediaStream from desktop capture source
-  const constraints: MediaStreamConstraints = {
-    video: {
-      mandatory: {
-        chromeMediaSource: 'desktop',
-        chromeMediaSourceId: streamId,
-        maxWidth: 1920,
-        maxHeight: 1080,
-        maxFrameRate: 12,
-      } as ChromiumDesktopConstraints,
-    } as unknown as MediaTrackConstraints,
-    audio: false,
+  // Call getDisplayMedia — Chrome's native picker appears here.
+  // This must happen AFTER the student's explicit consent in the
+  // ProctorAI overlay (the service worker gates this on ACCEPT).
+  let stream: MediaStream
+  try {
+    stream = await navigator.mediaDevices.getDisplayMedia({
+      video: true,
+      audio: false,
+    })
+  } catch (err) {
+    // NotAllowedError = student cancelled Chrome's native picker
+    if (err instanceof DOMException && err.name === 'NotAllowedError') {
+      console.log('[ProctorAI ScreenReview] getDisplayMedia NotAllowedError — picker cancelled')
+      sendCaptureFailed('picker_cancelled')
+      throw err
+    }
+    // Any other error is a technical failure
+    console.error('[ProctorAI ScreenReview] getDisplayMedia error:', err)
+    sendCaptureFailed('capture_failed')
+    throw err
   }
 
-  screenShareStream = await navigator.mediaDevices.getUserMedia(constraints)
+  // Validate the stream has a usable video track
+  const videoTracks = stream.getVideoTracks()
+  console.log('[ProctorAI] Display MediaStream created')
+  console.log('[ProctorAI] screen tracks:', videoTracks.length)
+
+  const videoTrack = videoTracks[0]
+  if (!videoTrack) {
+    console.error('[ProctorAI ScreenReview] No video track in display stream')
+    sendCaptureFailed('capture_failed')
+    throw new Error('No video track from getDisplayMedia')
+  }
+
+  console.log('[ProctorAI] track readyState:', videoTrack.readyState)
+  screenShareStream = stream
 
   // Apply content hint for readable text
-  const videoTrack = screenShareStream.getVideoTracks()[0]
-  if (videoTrack) {
-    // contentHint improves encoding for static/screen content
-    const track = videoTrack as MediaStreamTrack & { contentHint?: string }
-    if ('contentHint' in track) {
-      track.contentHint = 'detail'
-    }
+  const trackWithHint = videoTrack as MediaStreamTrack & { contentHint?: string }
+  if ('contentHint' in trackWithHint) {
+    trackWithHint.contentHint = 'detail'
+  }
 
-    // Listen for track end (student clicks Chrome "Stop sharing")
-    videoTrack.onended = () => {
-      console.log('[ProctorAI ScreenReview] Screen track ended by user')
-      void stopScreenShare('track_ended')
-    }
+  // Listen for track end (student clicks Chrome's native "Stop sharing")
+  videoTrack.onended = () => {
+    console.log('[ProctorAI ScreenReview] Screen track ended by user')
+    void stopScreenShare('track_ended')
   }
 
   screenReviewActive = true
@@ -139,6 +157,21 @@ export async function startScreenShare(
   })
 
   return offerSdp
+}
+
+/**
+ * Notify the service worker that screen capture failed.
+ * The service worker will relay this as screen_review_failed to the backend.
+ */
+function sendCaptureFailed(reason: string): void {
+  chrome.runtime.sendMessage({
+    target: 'service-worker',
+    type: 'SCREEN_REVIEW_CAPTURE_FAILED',
+    screen_review_id: screenReviewId,
+    reason,
+  }).catch(() => {
+    // Service worker may not be available
+  })
 }
 
 /**

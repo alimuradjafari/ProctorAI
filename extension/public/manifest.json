@@ -35,7 +35,7 @@
   "content_security_policy": {
   "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
   },
-  "permissions": ["storage", "offscreen", "desktopCapture", "scripting"],
+  "permissions": ["storage", "offscreen", "scripting"],
   "host_permissions": [
     "http://localhost:8000/*",
     "http://127.0.0.1:8000/*"

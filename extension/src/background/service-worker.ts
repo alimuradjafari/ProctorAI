@@ -14,11 +14,17 @@ import {
   type FocusDestination,
 } from '../browser/ExamWindowFocusDetector'
 import {
+  isRestrictedUrl,
+  decideRoutingTarget,
+  findBestTabInWindow,
+} from '../browser/ScreenReviewRouting'
+import {
   parseConsentMessage,
   parseOfferMessage,
   parseIceCandidateMessage,
   parseStoppedMessage,
 } from '../screenReview/ScreenReviewMessages'
+import { resolveScreenReviewResult } from '../screenReview/ScreenReviewConsent'
 
 const STORAGE_KEY = 'proctorai_session'
 const CAMERA_ENABLED_KEY = 'camera_monitoring_enabled'
@@ -897,20 +903,26 @@ function handleScreenReviewWsMessage(data: Record<string, unknown>): void {
   }
 }
 
-/** Check whether a URL scheme allows content-script injection. */
-function isInjectableUrl(url: string | undefined): boolean {
-  if (!url) return false
-  return url.startsWith('http://') || url.startsWith('https://') || url.startsWith('file://')
-}
-
 /**
  * Send a screen-review UI message to the monitored exam tab.
  *
- * Validates that the target tab has an injectable URL (http/https).
- * If the monitored tab is a restricted page (chrome://, edge://, etc.),
- * searches for an injectable tab in the exam window as fallback.
- * Pings first to verify the content script is loaded; if absent,
- * programmatically injects it and retries once.
+ * The manifest static content script already matches <all_urls>, so it is
+ * present on every injectable page regardless of host_permissions.
+ *
+ * In the production build host_permissions are intentionally scoped to a
+ * single domain, which means Chrome returns `tab.url` as `undefined` for
+ * arbitrary exam pages.  An undefined URL is therefore NORMAL and must
+ * NOT disqualify the tab.
+ *
+ * Routing strategy:
+ *   1. If URL is a known restricted scheme (chrome://, edge://, etc.),
+ *      search the exam window for a fallback tab.
+ *   2. Otherwise (injectable URL OR undefined), PING the monitored tab.
+ *   3. If PING succeeds → send the real message directly.
+ *   4. If PING fails:
+ *        - Restricted URL → log and give up.
+ *        - Injectable / undefined → attempt conditional programmatic
+ *          injection (Phase 13C guard) and retry.
  */
 function routeToActiveTab(message: Record<string, unknown>): void {
   if (monitoredTabId === null) {
@@ -921,7 +933,6 @@ function routeToActiveTab(message: Record<string, unknown>): void {
     return
   }
 
-  // Step 1: Get tab details and validate URL
   chrome.tabs.get(monitoredTabId)
     .then(async (tab) => {
       console.log('[ProctorAI] Screen review target tab:', {
@@ -930,30 +941,33 @@ function routeToActiveTab(message: Record<string, unknown>): void {
         status: tab.status,
       })
 
-      let targetTabId = monitoredTabId as number
+      // Step 1: Make routing decision based on URL (tolerates undefined)
+      const decision = decideRoutingTarget(monitoredTabId as number, tab.url)
 
-      // Step 2: If monitored tab is not injectable, search exam window
-      if (!isInjectableUrl(tab.url)) {
+      let targetTabId: number
+
+      if (decision.action === 'find-fallback') {
         console.warn(
-          '[ProctorAI] Monitored tab is not injectable:',
+          '[ProctorAI] Monitored tab has restricted URL:',
           tab.url,
-          '— searching for injectable tab in exam window'
+          '— searching exam window for a suitable tab'
         )
-
-        const fallbackId = await findInjectableTabInExamWindow()
+        const fallbackId = await findSuitableTabInExamWindow()
         if (fallbackId === null) {
           console.error(
-            '[ProctorAI] No injectable tab found in exam window.',
+            '[ProctorAI] No suitable tab found in exam window.',
             'Student must navigate to an http(s) page before screen review can work.'
           )
           return
         }
-
         targetTabId = fallbackId
-        console.log('[ProctorAI] Using fallback injectable tab:', targetTabId)
+        console.log('[ProctorAI] Using fallback tab:', targetTabId)
+      } else {
+        // ping (injectable URL or undefined URL — content script is loaded)
+        targetTabId = monitoredTabId as number
       }
 
-      // Step 3: Ping to check if content script is loaded
+      // Step 2: PING to check if content script is loaded
       try {
         const response = await chrome.tabs.sendMessage(
           targetTabId,
@@ -971,20 +985,27 @@ function routeToActiveTab(message: Record<string, unknown>): void {
           return
         }
 
-        // Unexpected response — try injecting
+        // Unexpected response — try injecting (but only for non-restricted URLs)
         console.warn(
-          '[ProctorAI] Overlay ping unexpected response, injecting into tab',
+          '[ProctorAI] Overlay ping unexpected response:',
           targetTabId
         )
       } catch (pingErr) {
-        // Ping failed — content script not loaded. Inject programmatically.
+        // Ping failed — content script not loaded in this tab
+        if (isRestrictedUrl(tab.url)) {
+          console.error(
+            '[ProctorAI] Content script not available on restricted page and no fallback found.',
+            'If the extension was just installed/updated, refresh the exam tab.'
+          )
+          return
+        }
         console.warn(
-          '[ProctorAI] Overlay not loaded in tab, injecting programmatically:',
+          '[ProctorAI] Overlay not loaded in tab, will attempt injection:',
           targetTabId, pingErr
         )
       }
 
-      // Step 4: Inject and send
+      // Step 3: Conditional injection fallback (Phase 13C guard preserved)
       await injectAndSend(targetTabId, message)
       console.log(
         '[ProctorAI] Screen review message routed to tab:',
@@ -1003,21 +1024,21 @@ function routeToActiveTab(message: Record<string, unknown>): void {
 }
 
 /**
- * Search for an injectable tab (http/https) in the exam window.
- * Returns the tab ID or null if none found.
+ * Search the exam window for a tab suitable for screen-review injection.
+ *
+ * Prefers tabs with a known injectable URL (http/https/file).
+ * Falls back to tabs with `undefined` URL (URL hidden by Chrome
+ * permissions — the manifest content script is still loaded).
+ * Never returns tabs with a known restricted URL.
  */
-async function findInjectableTabInExamWindow(): Promise<number | null> {
+async function findSuitableTabInExamWindow(): Promise<number | null> {
   try {
     const queryOpts: chrome.tabs.QueryInfo = {}
     if (examWindowId !== null) {
       queryOpts.windowId = examWindowId
     }
     const tabs = await chrome.tabs.query(queryOpts)
-    for (const tab of tabs) {
-      if (tab.id !== undefined && isInjectableUrl(tab.url)) {
-        return tab.id
-      }
-    }
+    return findBestTabInWindow(tabs)
   } catch {
     // Tabs query failed
   }
@@ -1074,10 +1095,27 @@ async function injectAndSend(
 }
 
 /**
- * Initiate Chrome desktop capture after student consents.
- * Suppresses focus monitoring during the picker to avoid false violations.
+ * Initiate screen review capture via the offscreen document.
+ *
+ * MV3 architecture: instead of calling chrome.desktopCapture.chooseDesktopMedia()
+ * (which requires targetTab in SW context and scopes the stream to the target tab),
+ * we delegate capture to the offscreen document which calls
+ * navigator.mediaDevices.getDisplayMedia() directly.
+ *
+ * Flow:
+ *   1. Ensure offscreen document exists
+ *   2. Fetch ICE servers from backend
+ *   3. Send START_SCREEN_REVIEW_CAPTURE to offscreen
+ *   4. Offscreen calls getDisplayMedia() — Chrome native picker appears
+ *   5. Student selects screen → offscreen creates WebRTC offer
+ *   6. Offer relayed back via SCREEN_REVIEW_OFFER message
+ *
+ * On failure, offscreen sends SCREEN_REVIEW_CAPTURE_FAILED which the
+ * service worker handles separately.
  */
-function startDesktopCapture(reviewId: string): void {
+async function startScreenReviewCapture(reviewId: string): Promise<void> {
+  console.log('[ProctorAI] Starting screen review capture for reviewId:', reviewId)
+
   // Suppress focus events during the Chrome picker
   suppressFocusEvents = true
 
@@ -1090,50 +1128,44 @@ function startDesktopCapture(reviewId: string): void {
   }, 60_000)
 
   try {
-    chrome.desktopCapture.chooseDesktopMedia(
-      ['screen'],
-      (streamId) => {
-        clearFocusSuppression()
+    // Ensure offscreen document exists (may already be running for camera)
+    await ensureOffscreenDocument()
 
-        if (!streamId) {
-          // Student cancelled the picker
-          sendScreenReviewDeclined(reviewId)
-          return
-        }
+    // Fetch ICE servers from backend
+    const iceServers = await fetchIceServers()
 
-        // Fetch ICE servers from backend, then send to offscreen document.
-        fetchIceServers()
-          .then((iceServers) => {
-            return chrome.runtime.sendMessage({
-              target: 'offscreen',
-              type: 'START_SCREEN_SHARE',
-              streamId,
-              screen_review_id: reviewId,
-              iceServers,
-            })
-          })
-          .catch((err) => {
-            console.error(
-              '[ProctorAI] Failed to start screen share:',
-              err
-            )
-            cleanupScreenReview()
-          })
+    // Send capture command to offscreen — it will call getDisplayMedia
+    const response = await chrome.runtime.sendMessage({
+      target: 'offscreen',
+      type: 'START_SCREEN_REVIEW_CAPTURE',
+      screen_review_id: reviewId,
+      iceServers,
+    })
 
-        // Show student that live screen review is active
-        routeToActiveTab({
-          type: 'SHOW_SCREEN_REVIEW_ACTIVE',
-          screen_review_id: reviewId,
-        })
-      }
-    )
+    if (response?.ok === false) {
+      console.error(
+        '[ProctorAI] Offscreen rejected START_SCREEN_REVIEW_CAPTURE:',
+        response.error
+      )
+      clearFocusSuppression()
+      sendScreenReviewFailed(reviewId, 'capture_failed')
+      return
+    }
+
+    console.log('[ProctorAI] START_SCREEN_REVIEW_CAPTURE sent to offscreen')
+
+    // Show student that live screen review is active
+    routeToActiveTab({
+      type: 'SHOW_SCREEN_REVIEW_ACTIVE',
+      screen_review_id: reviewId,
+    })
   } catch (err) {
     console.error(
-      '[ProctorAI] Failed to open desktop capture picker:',
+      '[ProctorAI] Failed to initiate screen review capture:',
       err
     )
     clearFocusSuppression()
-    sendScreenReviewDeclined(reviewId)
+    sendScreenReviewFailed(reviewId, 'capture_failed')
   }
 }
 
@@ -1145,14 +1177,54 @@ function clearFocusSuppression(): void {
   }
 }
 
+/**
+ * Send a screen-review result to the backend (declined / failed) and
+ * clean up local state.
+ *
+ * `sendScreenReviewDeclined` is ONLY called when the student explicitly
+ * clicks Decline in the consent UI.  Technical errors and picker
+ * cancellations use `sendScreenReviewFailed` instead so the teacher
+ * dashboard can differentiate.
+ */
 function sendScreenReviewDeclined(reviewId: string): void {
+  const msg = resolveScreenReviewResult(reviewId, 'explicit_decline')
+  console.log('[ProctorAI] Sending EXPLICIT_DECLINE for reviewId:', reviewId)
+  if (participantScreenReviewWs && participantScreenReviewWs.readyState === WebSocket.OPEN) {
+    participantScreenReviewWs.send(JSON.stringify(msg))
+  }
+  cleanupScreenReview()
+}
+
+/**
+ * Report a technical failure or picker cancellation to the backend.
+ * This sends `screen_review_failed` (NOT `screen_review_declined`) so
+ * the teacher sees "connection failed" instead of "student declined".
+ *
+ * Valid only AFTER the student has accepted (backend status must be
+ * ACCEPTED for the REQUESTED → ACCEPTED → FAILED transition chain).
+ */
+function sendScreenReviewFailed(reviewId: string, reason: string): void {
+  const outcome = reason === 'picker_cancelled' ? 'picker_cancelled' : 'capture_failed'
+  const msg = resolveScreenReviewResult(reviewId, outcome)
+  console.log('[ProctorAI] Sending START_FAILED for reviewId:', reviewId, 'reason:', reason)
+  if (participantScreenReviewWs && participantScreenReviewWs.readyState === WebSocket.OPEN) {
+    participantScreenReviewWs.send(JSON.stringify(msg))
+  }
+  cleanupScreenReview()
+}
+
+/**
+ * Notify the backend that the student accepted the screen review request.
+ * The teacher dashboard transitions to "accepted — connecting…".
+ */
+function sendScreenReviewAccepted(reviewId: string): void {
+  console.log('[ProctorAI] Sending screen_review_accepted for reviewId:', reviewId)
   if (participantScreenReviewWs && participantScreenReviewWs.readyState === WebSocket.OPEN) {
     participantScreenReviewWs.send(JSON.stringify({
-      type: 'screen_review_declined',
+      type: 'screen_review_accepted',
       screen_review_id: reviewId,
     }))
   }
-  cleanupScreenReview()
 }
 
 /**
@@ -1462,22 +1534,44 @@ chrome.runtime.onMessage.addListener(
 
       else if (message.type === 'SCREEN_REVIEW_CONSENT') {
         // Content script overlay reports student consent
-        const consent = parseConsentMessage(message)
+        console.log('[ProctorAI] Screen review CONSENT message received:', {
+          accepted: message.accepted,
+          screen_review_id: message.screen_review_id,
+          activeScreenReviewId,
+        })
 
-        if (consent === null || consent.screen_review_id !== activeScreenReviewId) {
-          sendResponse({ ok: false })
-          return true
+        try {
+          const consent = parseConsentMessage(message)
+
+          if (consent === null || consent.screen_review_id !== activeScreenReviewId) {
+            console.warn(
+              '[ProctorAI] Screen review consent rejected:',
+              'parsed:', consent !== null,
+              'idMatch:', consent?.screen_review_id === activeScreenReviewId
+            )
+            sendResponse({ ok: false })
+            return true
+          }
+
+          if (consent.accepted) {
+            // Student accepted — notify backend FIRST so teacher sees "accepted"
+            console.log('[ProctorAI] Screen review ACCEPT received — reviewId:', consent.screen_review_id)
+            sendScreenReviewAccepted(consent.screen_review_id)
+            // Then initiate capture via offscreen document (getDisplayMedia)
+            void startScreenReviewCapture(consent.screen_review_id)
+          } else {
+            // Student explicitly declined
+            console.log('[ProctorAI] Explicit DECLINE received — reviewId:', consent.screen_review_id)
+            sendScreenReviewDeclined(consent.screen_review_id)
+          }
+
+          sendResponse({ ok: true })
+        } catch (err) {
+          console.error('[ProctorAI] Error handling screen review consent:', err)
+          sendResponse({ ok: false, error: String(err) })
         }
 
-        if (consent.accepted) {
-          // Student accepted — start desktop capture
-          startDesktopCapture(consent.screen_review_id)
-        } else {
-          // Student declined
-          sendScreenReviewDeclined(consent.screen_review_id)
-        }
-
-        sendResponse({ ok: true })
+        return true
       }
 
       else if (message.type === 'SCREEN_REVIEW_STOP_FROM_STUDENT') {
@@ -1524,6 +1618,23 @@ chrome.runtime.onMessage.addListener(
             sdpMid: ice.sdpMid,
             sdpMLineIndex: ice.sdpMLineIndex,
           }))
+        }
+        sendResponse({ ok: true })
+      }
+
+      else if (message.type === 'SCREEN_REVIEW_CAPTURE_FAILED') {
+        // Offscreen reports getDisplayMedia failure or picker cancellation.
+        // This is NOT an explicit decline — relay as screen_review_failed.
+        const reason = (message.reason as string) || 'capture_failed'
+        const failedReviewId = message.screen_review_id as string
+        console.log(
+          '[ProctorAI] Screen review capture failed — reason:',
+          reason,
+          'reviewId:', failedReviewId
+        )
+        clearFocusSuppression()
+        if (failedReviewId && failedReviewId === activeScreenReviewId) {
+          sendScreenReviewFailed(failedReviewId, reason)
         }
         sendResponse({ ok: true })
       }

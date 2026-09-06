@@ -271,23 +271,31 @@ function showConsentUI(reviewId: string): void {
   const declineBtn = shadowRoot.getElementById('proctorai-decline-btn')
 
   shareBtn?.addEventListener('click', () => {
+    console.log('[ProctorAI] Student clicked ACCEPT — reviewId:', currentReviewId)
     chrome.runtime.sendMessage({
       target: 'service-worker',
       type: 'SCREEN_REVIEW_CONSENT',
       accepted: true,
       screen_review_id: currentReviewId,
-    }).catch(() => {})
+    }).then(
+      (resp) => console.log('[ProctorAI] ACCEPT response:', resp),
+      (err) => console.error('[ProctorAI] ACCEPT sendMessage failed:', err)
+    )
     // Don't remove overlay yet — switch to active mode after sharing starts
     clearContent()
   })
 
   declineBtn?.addEventListener('click', () => {
+    console.log('[ProctorAI] Student clicked DECLINE — reviewId:', currentReviewId)
     chrome.runtime.sendMessage({
       target: 'service-worker',
       type: 'SCREEN_REVIEW_CONSENT',
       accepted: false,
       screen_review_id: currentReviewId,
-    }).catch(() => {})
+    }).then(
+      (resp) => console.log('[ProctorAI] DECLINE response:', resp),
+      (err) => console.error('[ProctorAI] DECLINE sendMessage failed:', err)
+    )
     removeOverlay()
   })
 }

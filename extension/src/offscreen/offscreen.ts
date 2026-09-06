@@ -1543,26 +1543,29 @@ chrome.runtime.onMessage.addListener(
 
       // --- Screen review messages (Phase 10.1) ---
 
-      case 'START_SCREEN_SHARE': {
-        const streamId = message.streamId as string
+      case 'START_SCREEN_REVIEW_CAPTURE': {
         const iceServers = (message.iceServers ?? []) as RTCIceServer[]
         const reviewId = message.screen_review_id as string
 
-        if (!streamId || !reviewId) {
-          sendResponse({ ok: false, error: 'Missing streamId or reviewId' })
+        if (!reviewId) {
+          sendResponse({ ok: false, error: 'Missing reviewId' })
           break
         }
 
         screenReview.setReviewId(reviewId)
 
-        // Fire-and-forget: startScreenShare generates an offer and sends
-        // it back to the service worker via chrome.runtime.sendMessage
-        screenReview.startScreenShare(streamId, iceServers)
+        // Fire-and-forget: startScreenCapture calls getDisplayMedia,
+        // generates an offer, and sends it back to the service worker
+        // via chrome.runtime.sendMessage.
+        // Errors are handled inside startScreenCapture which sends
+        // SCREEN_REVIEW_CAPTURE_FAILED to the service worker.
+        screenReview.startScreenCapture(iceServers)
           .then(() => {
             sendResponse({ ok: true })
           })
           .catch((err: unknown) => {
-            console.error('[ProctorAI Offscreen] Screen share start failed:', err)
+            console.error('[ProctorAI Offscreen] Screen capture start failed:', err)
+            // Error already reported via SCREEN_REVIEW_CAPTURE_FAILED
             sendResponse({ ok: false, error: String(err) })
           })
 
