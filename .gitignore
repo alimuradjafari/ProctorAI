@@ -75,6 +75,10 @@ logs/
 # Railway IaC
 .railway/node_modules/
 
+# Distribution packages (hackathon sideload + web store artifacts — not committed)
+release/
+ProctorAI-*.zip
+
 # Coverage
 htmlcov/
 .coverage
