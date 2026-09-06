@@ -259,4 +259,4 @@ See [docs/development-phases.md](docs/development-phases.md) for details.
 
 ## License
 
-This project is being developed for a hackathon demonstration.
+This project is being developed for a hackathon demonstration open source.
