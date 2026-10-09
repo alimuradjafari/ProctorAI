@@ -110,6 +110,7 @@ export function useScreenReview(
   const statusRef = useRef<ScreenReviewStatus>('idle')
   const reviewIdRef = useRef<string | null>(null)
   const iceServersRef = useRef<RTCIceServer[]>([])
+  const pendingRemoteIceCandidatesRef = useRef<RTCIceCandidateInit[]>([])
 
   // Fetch ICE servers from backend on mount (STUN/TURN config).
   useEffect(() => {
@@ -149,6 +150,7 @@ export function useScreenReview(
       pcRef.current.close()
       pcRef.current = null
     }
+    pendingRemoteIceCandidatesRef.current = []
     setRemoteStream(null)
   }, [])
 
@@ -287,10 +289,9 @@ export function useScreenReview(
 
       // Handle incoming screen video track
       pc.ontrack = (event) => {
-        if (event.streams[0]) {
-          setRemoteStream(event.streams[0])
-          setStatus('active')
-        }
+        // Some browsers omit event.streams even when a valid track arrives.
+        const incomingStream = event.streams[0] ?? new MediaStream([event.track])
+        setRemoteStream(incomingStream)
       }
 
       // Relay ICE candidates to backend
@@ -310,7 +311,9 @@ export function useScreenReview(
 
       // Handle connection state changes
       pc.onconnectionstatechange = () => {
-        if (pc.connectionState === 'failed') {
+        if (pc.connectionState === 'connected') {
+          setStatus('active')
+        } else if (pc.connectionState === 'failed') {
           cleanupPc()
           setStatus('failed')
         } else if (pc.connectionState === 'disconnected') {
@@ -335,6 +338,15 @@ export function useScreenReview(
         await pc.setRemoteDescription(
           new RTCSessionDescription({ type: 'offer', sdp })
         )
+
+        // Participant ICE gathering can begin before its offer is relayed.
+        // Flush candidates that arrived while remoteDescription was null.
+        const queuedCandidates = pendingRemoteIceCandidatesRef.current
+        pendingRemoteIceCandidatesRef.current = []
+        for (const candidate of queuedCandidates) {
+          await pc.addIceCandidate(new RTCIceCandidate(candidate))
+        }
+
         const answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
 
@@ -368,14 +380,19 @@ export function useScreenReview(
       const pc = pcRef.current
       if (!pc) return
 
+      const candidateInit: RTCIceCandidateInit = {
+        candidate,
+        sdpMid: sdpMid ?? undefined,
+        sdpMLineIndex: sdpMLineIndex ?? undefined,
+      }
+
+      if (!pc.remoteDescription) {
+        pendingRemoteIceCandidatesRef.current.push(candidateInit)
+        return
+      }
+
       try {
-        await pc.addIceCandidate(
-          new RTCIceCandidate({
-            candidate,
-            sdpMid: sdpMid ?? undefined,
-            sdpMLineIndex: sdpMLineIndex ?? undefined,
-          })
-        )
+        await pc.addIceCandidate(new RTCIceCandidate(candidateInit))
       } catch (err) {
         console.warn('[ScreenReview] Failed to add ICE candidate:', err)
       }

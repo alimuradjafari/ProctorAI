@@ -22,6 +22,7 @@ let screenShareStream: MediaStream | null = null
 let peerConnection: RTCPeerConnection | null = null
 let screenReviewId: string | null = null
 let screenReviewActive = false
+let pendingRemoteIceCandidates: RTCIceCandidateInit[] = []
 
 // ---------------------------------------------------------------------------
 // Screen capture (getDisplayMedia — MV3 recommended pattern)
@@ -110,6 +111,7 @@ export async function startScreenCapture(
     iceServers: iceServers.length > 0 ? iceServers : undefined,
   })
   peerConnection = pc
+  pendingRemoteIceCandidates = []
 
   // Add screen video track(s) to peer connection
   for (const track of screenShareStream.getTracks()) {
@@ -186,6 +188,19 @@ export async function handleAnswer(sdp: string): Promise<void> {
   await peerConnection.setRemoteDescription(
     new RTCSessionDescription({ type: 'answer', sdp })
   )
+
+  // ICE gathering starts as soon as the instructor sets its local answer, so
+  // candidates can reach us before the answer itself. Apply anything queued
+  // while remoteDescription was still null.
+  const queuedCandidates = pendingRemoteIceCandidates
+  pendingRemoteIceCandidates = []
+  for (const candidate of queuedCandidates) {
+    try {
+      await peerConnection.addIceCandidate(new RTCIceCandidate(candidate))
+    } catch (err) {
+      console.warn('[ProctorAI ScreenReview] Failed to add queued ICE candidate:', err)
+    }
+  }
 }
 
 /**
@@ -201,14 +216,19 @@ export async function handleIceCandidate(
     return
   }
 
+  const candidateInit: RTCIceCandidateInit = {
+    candidate,
+    sdpMid: sdpMid ?? undefined,
+    sdpMLineIndex: sdpMLineIndex ?? undefined,
+  }
+
+  if (!peerConnection.remoteDescription) {
+    pendingRemoteIceCandidates.push(candidateInit)
+    return
+  }
+
   try {
-    await peerConnection.addIceCandidate(
-      new RTCIceCandidate({
-        candidate,
-        sdpMid: sdpMid ?? undefined,
-        sdpMLineIndex: sdpMLineIndex ?? undefined,
-      })
-    )
+    await peerConnection.addIceCandidate(new RTCIceCandidate(candidateInit))
   } catch (err) {
     console.warn('[ProctorAI ScreenReview] Failed to add ICE candidate:', err)
   }
@@ -247,6 +267,8 @@ export async function stopScreenShare(reason?: string): Promise<void> {
     peerConnection.close()
     peerConnection = null
   }
+
+  pendingRemoteIceCandidates = []
 
   screenReviewActive = false
   screenReviewId = null
