@@ -904,6 +904,51 @@ function handleScreenReviewWsMessage(data: Record<string, unknown>): void {
 }
 
 /**
+ * Resolve a tab that can host the screen-review overlay when the monitored
+ * exam tab is not bound.
+ *
+ * `monitoredTabId` is assigned only by initFocusMonitoring(), so it is null
+ * after a service worker restart that happened while Chrome was unfocused and
+ * after the exam window closed. Without this the instructor's request dies
+ * here and the student never sees the consent dialog.
+ *
+ * The result is used only to decide WHERE the dialog renders — it never binds
+ * the monitored exam tab/window, so focus and geometry monitoring are
+ * unaffected, and the student still has to accept the dialog explicitly.
+ */
+async function resolveOverlayTabOnDemand(): Promise<number | null> {
+  try {
+    const tabs = await chrome.tabs.query({
+      active: true,
+      lastFocusedWindow: true,
+    })
+    const tabId = findBestTabInWindow(tabs)
+    if (tabId !== null) return tabId
+  } catch {
+    // Tabs API unavailable — fall through to the exam-window search
+  }
+  return findSuitableTabInExamWindow()
+}
+
+/**
+ * Deliver a message to an overlay that is known to be listening.
+ *
+ * The overlay's message listener renders UI and never calls sendResponse, so
+ * the returned promise rejects with "message port closed" even though the
+ * message was delivered and acted upon. That rejection is not a failure.
+ */
+async function sendToOverlay(
+  tabId: number,
+  message: Record<string, unknown>
+): Promise<void> {
+  try {
+    await chrome.tabs.sendMessage(tabId, message)
+  } catch {
+    // Expected — no listener responds to overlay UI messages.
+  }
+}
+
+/**
  * Send a screen-review UI message to the monitored exam tab.
  *
  * The manifest static content script already matches <all_urls>, so it is
@@ -915,112 +960,125 @@ function handleScreenReviewWsMessage(data: Record<string, unknown>): void {
  * NOT disqualify the tab.
  *
  * Routing strategy:
- *   1. If URL is a known restricted scheme (chrome://, edge://, etc.),
+ *   1. Resolve the target tab: the monitored exam tab, or — when it is not
+ *      bound — a tab found on demand.
+ *   2. If URL is a known restricted scheme (chrome://, edge://, etc.),
  *      search the exam window for a fallback tab.
- *   2. Otherwise (injectable URL OR undefined), PING the monitored tab.
- *   3. If PING succeeds → send the real message directly.
- *   4. If PING fails:
+ *   3. Otherwise (injectable URL OR undefined), PING the target tab.
+ *   4. If PING succeeds → send the real message directly.
+ *   5. If PING fails:
  *        - Restricted URL → log and give up.
  *        - Injectable / undefined → attempt conditional programmatic
  *          injection (Phase 13C guard) and retry.
  */
 function routeToActiveTab(message: Record<string, unknown>): void {
-  if (monitoredTabId === null) {
-    console.warn(
-      '[ProctorAI] Cannot route screen review message: monitored exam tab is not available',
+  void deliverScreenReviewMessage(message)
+}
+
+async function deliverScreenReviewMessage(
+  message: Record<string, unknown>
+): Promise<void> {
+  const resolvedTabId = monitoredTabId ?? (await resolveOverlayTabOnDemand())
+
+  if (resolvedTabId === null) {
+    console.error(
+      '[ProctorAI] Cannot route screen review message: no usable tab found',
       message.type
     )
     return
   }
 
-  chrome.tabs.get(monitoredTabId)
-    .then(async (tab) => {
-      console.log('[ProctorAI] Screen review target tab:', {
-        id: monitoredTabId,
-        url: tab.url,
-        status: tab.status,
+  if (monitoredTabId === null) {
+    console.warn(
+      '[ProctorAI] Monitored exam tab was not bound — resolved tab on demand for',
+      message.type,
+      resolvedTabId
+    )
+  }
+
+  let targetTabId = resolvedTabId
+
+  try {
+    const tab = await chrome.tabs.get(targetTabId)
+    console.log('[ProctorAI] Screen review target tab:', {
+      id: targetTabId,
+      url: tab.url,
+      status: tab.status,
+    })
+
+    // Step 1: Make routing decision based on URL (tolerates undefined)
+    const decision = decideRoutingTarget(targetTabId, tab.url)
+
+    if (decision.action === 'find-fallback') {
+      console.warn(
+        '[ProctorAI] Monitored tab has restricted URL:',
+        tab.url,
+        '— searching exam window for a suitable tab'
+      )
+      const fallbackId = await findSuitableTabInExamWindow()
+      if (fallbackId === null) {
+        console.error(
+          '[ProctorAI] No suitable tab found in exam window.',
+          'Student must navigate to an http(s) page before screen review can work.'
+        )
+        return
+      }
+      targetTabId = fallbackId
+      console.log('[ProctorAI] Using fallback tab:', targetTabId)
+    }
+
+    // Step 2: PING to check if content script is loaded
+    try {
+      const response = await chrome.tabs.sendMessage(targetTabId, {
+        type: 'PING_SCREEN_REVIEW_OVERLAY',
       })
 
-      // Step 1: Make routing decision based on URL (tolerates undefined)
-      const decision = decideRoutingTarget(monitoredTabId as number, tab.url)
-
-      let targetTabId: number
-
-      if (decision.action === 'find-fallback') {
-        console.warn(
-          '[ProctorAI] Monitored tab has restricted URL:',
-          tab.url,
-          '— searching exam window for a suitable tab'
-        )
-        const fallbackId = await findSuitableTabInExamWindow()
-        if (fallbackId === null) {
-          console.error(
-            '[ProctorAI] No suitable tab found in exam window.',
-            'Student must navigate to an http(s) page before screen review can work.'
-          )
-          return
-        }
-        targetTabId = fallbackId
-        console.log('[ProctorAI] Using fallback tab:', targetTabId)
-      } else {
-        // ping (injectable URL or undefined URL — content script is loaded)
-        targetTabId = monitoredTabId as number
-      }
-
-      // Step 2: PING to check if content script is loaded
-      try {
-        const response = await chrome.tabs.sendMessage(
-          targetTabId,
-          { type: 'PING_SCREEN_REVIEW_OVERLAY' }
-        )
-
-        if (response?.ok) {
-          // Content script present — send actual message
-          await chrome.tabs.sendMessage(targetTabId, message)
-          console.log(
-            '[ProctorAI] Screen review message routed to tab:',
-            message.type,
-            targetTabId
-          )
-          return
-        }
-
-        // Unexpected response — try injecting (but only for non-restricted URLs)
-        console.warn(
-          '[ProctorAI] Overlay ping unexpected response:',
+      if (response?.ok) {
+        // Content script present — send actual message
+        await sendToOverlay(targetTabId, message)
+        console.log(
+          '[ProctorAI] Screen review message routed to tab:',
+          message.type,
           targetTabId
         )
-      } catch (pingErr) {
-        // Ping failed — content script not loaded in this tab
-        if (isRestrictedUrl(tab.url)) {
-          console.error(
-            '[ProctorAI] Content script not available on restricted page and no fallback found.',
-            'If the extension was just installed/updated, refresh the exam tab.'
-          )
-          return
-        }
-        console.warn(
-          '[ProctorAI] Overlay not loaded in tab, will attempt injection:',
-          targetTabId, pingErr
-        )
+        return
       }
 
-      // Step 3: Conditional injection fallback (Phase 13C guard preserved)
-      await injectAndSend(targetTabId, message)
-      console.log(
-        '[ProctorAI] Screen review message routed to tab:',
-        message.type,
+      // Unexpected response — try injecting (but only for non-restricted URLs)
+      console.warn(
+        '[ProctorAI] Overlay ping unexpected response:',
         targetTabId
       )
-    })
-    .catch((err) => {
-      console.error(
-        '[ProctorAI] Failed to route screen review message:',
-        message.type,
-        monitoredTabId,
-        err
+    } catch (pingErr) {
+      // Ping failed — content script not loaded in this tab
+      if (isRestrictedUrl(tab.url)) {
+        console.error(
+          '[ProctorAI] Content script not available on restricted page and no fallback found.',
+          'If the extension was just installed/updated, refresh the exam tab.'
+        )
+        return
+      }
+      console.warn(
+        '[ProctorAI] Overlay not loaded in tab, will attempt injection:',
+        targetTabId, pingErr
       )
-    })
+    }
+
+    // Step 3: Conditional injection fallback (Phase 13C guard preserved)
+    await injectAndSend(targetTabId, message)
+    console.log(
+      '[ProctorAI] Screen review message routed to tab:',
+      message.type,
+      targetTabId
+    )
+  } catch (err) {
+    console.error(
+      '[ProctorAI] Failed to route screen review message:',
+      message.type,
+      targetTabId,
+      err
+    )
+  }
 }
 
 /**
@@ -1091,7 +1149,7 @@ async function injectAndSend(
     console.log('[ProctorAI] Overlay already loaded in tab, skipping injection:', tabId)
   }
 
-  await chrome.tabs.sendMessage(tabId, message)
+  await sendToOverlay(tabId, message)
 }
 
 /**

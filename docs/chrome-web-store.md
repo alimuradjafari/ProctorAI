@@ -58,7 +58,7 @@ The ZIP root directly contains `manifest.json` — no parent folder wrapping.
 
 | Host Pattern                                             | Environment | Justification |
 |----------------------------------------------------------|-------------|---------------|
-| `https://proctorai-production-f994.up.railway.app/*`    | Production  | Connect to the ProctorAI backend API for participant registration, monitoring event delivery, and WebRTC signaling. |
+| `https://proctorai-production-58f1.up.railway.app/*`    | Production  | Connect to the ProctorAI backend API for participant registration, monitoring event delivery, and WebRTC signaling. |
 | `http://localhost:8000/*`                                | Development | Local development only — removed in production builds. |
 | `http://127.0.0.1:8000/*`                                | Development | Local development only — removed in production builds. |
 
@@ -136,7 +136,7 @@ This extension is published as **Unlisted** on the Chrome Web Store:
 
 | Field              | Source (`public/manifest.json`) | Production (`dist/manifest.json`) |
 |--------------------|--------------------------------|-----------------------------------|
-| `host_permissions` | `localhost:8000`, `127.0.0.1:8000` | `proctorai-production-f994.up.railway.app` only |
+| `host_permissions` | `localhost:8000`, `127.0.0.1:8000` | `proctorai-production-58f1.up.railway.app` only |
 | `icons`            | Same 4 PNGs                    | Same 4 PNGs                       |
 | `permissions`      | 3 permissions                  | 3 permissions (unchanged)         |
 | `version`          | 0.2.0                          | 0.2.0                             |

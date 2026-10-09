@@ -13,9 +13,9 @@ ProctorAI is a privacy-first, LMS-independent exam monitoring system that combin
 | **Cross-laptop live monitoring** | Validated |
 | **Consent-based WebRTC screen review** | Validated |
 
-**Live instructor dashboard:** https://lovely-harmony-production.up.railway.app
+**Live instructor dashboard:** https://blissful-expression-production-9d3a.up.railway.app
 
-**Privacy policy:** https://lovely-harmony-production.up.railway.app/privacy
+**Privacy policy:** https://blissful-expression-production-9d3a.up.railway.app/privacy
 
 ---
 
