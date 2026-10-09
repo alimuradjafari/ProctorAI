@@ -34,13 +34,33 @@ export function LiveScreenViewer({
 
   // Attach stream to video element
   useEffect(() => {
-    if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream
+    const video = videoRef.current
+    if (!video || !stream) return
+
+    video.srcObject = stream
+    video.muted = true
+
+    const startPlayback = () => {
+      void video.play().catch((err) => {
+        console.warn('[ScreenReview] Remote video playback did not start:', err)
+      })
     }
+
+    // A remote WebRTC track is often initially muted and becomes playable
+    // only after the first RTP frame arrives. Retry at both browser signals.
+    video.addEventListener('loadedmetadata', startPlayback)
+    for (const track of stream.getVideoTracks()) {
+      track.addEventListener('unmute', startPlayback)
+    }
+    startPlayback()
+
     return () => {
-      if (videoRef.current) {
-        videoRef.current.srcObject = null
+      video.removeEventListener('loadedmetadata', startPlayback)
+      for (const track of stream.getVideoTracks()) {
+        track.removeEventListener('unmute', startPlayback)
       }
+      video.pause()
+      video.srcObject = null
     }
   }, [stream])
 
@@ -124,6 +144,9 @@ export function LiveScreenViewer({
           autoPlay
           playsInline
           muted
+          onLoadedMetadata={(event) => {
+            void event.currentTarget.play().catch(() => {})
+          }}
           className="w-full h-auto object-contain"
           style={{ maxHeight: '600px' }}
         />
