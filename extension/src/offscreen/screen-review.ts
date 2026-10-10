@@ -22,6 +22,7 @@ let screenShareStream: MediaStream | null = null
 let peerConnection: RTCPeerConnection | null = null
 let screenReviewId: string | null = null
 let screenReviewActive = false
+let captureGeneration = 0
 let pendingRemoteIceCandidates: RTCIceCandidateInit[] = []
 
 // ---------------------------------------------------------------------------
@@ -55,6 +56,9 @@ export async function startScreenCapture(
     throw new Error('Screen share already active')
   }
 
+  const generation = ++captureGeneration
+  const requestedReviewId = screenReviewId
+
   // Call getDisplayMedia — Chrome's native picker appears here.
   // This must happen AFTER the student's explicit consent in the
   // ProctorAI overlay (the service worker gates this on ACCEPT).
@@ -75,6 +79,12 @@ export async function startScreenCapture(
     console.error('[ProctorAI ScreenReview] getDisplayMedia error:', err)
     sendCaptureFailed('capture_failed')
     throw err
+  }
+
+  // The instructor may cancel while Chrome's picker is still open.
+  if (generation !== captureGeneration || requestedReviewId !== screenReviewId) {
+    stream.getTracks().forEach(track => track.stop())
+    throw new Error('Screen review ended while choosing a screen')
   }
 
   // Validate the stream has a usable video track
@@ -185,18 +195,20 @@ export async function handleAnswer(sdp: string): Promise<void> {
     return
   }
 
-  await peerConnection.setRemoteDescription(
+  const pc = peerConnection
+  await pc.setRemoteDescription(
     new RTCSessionDescription({ type: 'answer', sdp })
   )
 
   // ICE gathering starts as soon as the instructor sets its local answer, so
   // candidates can reach us before the answer itself. Apply anything queued
   // while remoteDescription was still null.
+  if (peerConnection !== pc) return
   const queuedCandidates = pendingRemoteIceCandidates
   pendingRemoteIceCandidates = []
   for (const candidate of queuedCandidates) {
     try {
-      await peerConnection.addIceCandidate(new RTCIceCandidate(candidate))
+      await pc.addIceCandidate(new RTCIceCandidate(candidate))
     } catch (err) {
       console.warn('[ProctorAI ScreenReview] Failed to add queued ICE candidate:', err)
     }
@@ -243,7 +255,10 @@ export async function handleIceCandidate(
  * @param reason  Why sharing stopped (for logging)
  */
 export async function stopScreenShare(reason?: string): Promise<void> {
+  captureGeneration++
   if (!screenReviewActive && !screenShareStream && !peerConnection) {
+    screenReviewId = null
+    pendingRemoteIceCandidates = []
     return // Already cleaned up
   }
 

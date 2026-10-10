@@ -42,6 +42,7 @@ _VALID_TRANSITIONS: dict[ScreenReviewStatus, set[ScreenReviewStatus]] = {
         ScreenReviewStatus.DECLINED,
         ScreenReviewStatus.EXPIRED,
         ScreenReviewStatus.STOPPED,
+        ScreenReviewStatus.FAILED,
     },
     ScreenReviewStatus.ACCEPTED: {
         ScreenReviewStatus.SHARING,
@@ -187,6 +188,7 @@ class ScreenReviewManager:
                 )
                 return False
 
+            old_status = request.status
             request.status = new_status
 
             # Cancel timeout on terminal state
@@ -204,7 +206,7 @@ class ScreenReviewManager:
             logger.info(
                 "Screen review %s: %s -> %s",
                 screen_review_id,
-                request.status.value,
+                old_status.value,
                 new_status.value,
             )
             return True
@@ -275,14 +277,17 @@ class ScreenReviewManager:
             )
 
     async def unregister_participant_ws(
-        self, participant_session_id: str
-    ) -> None:
-        """Remove a participant's WebSocket connection."""
+        self, participant_session_id: str, ws: WebSocket | None = None
+    ) -> bool:
+        """Remove only the connection that closed, never its replacement."""
         async with self._lock:
+            if ws is not None and self._participant_ws.get(participant_session_id) is not ws:
+                return False
             self._participant_ws.pop(participant_session_id, None)
             logger.debug(
                 "Participant WS unregistered: %s", participant_session_id
             )
+            return True
 
     async def send_to_participant(
         self, participant_session_id: str, message: dict

@@ -195,11 +195,14 @@ async def participant_screen_review_ws(websocket: WebSocket):
                         },
                     )
                 elif msg_type == "screen_review_failed":
-                    # Technical failure or picker cancellation AFTER accept.
-                    # Only valid from ACCEPTED state (REQUESTED→ACCEPTED→FAILED).
-                    if request.status != ScreenReviewStatus.ACCEPTED:
+                    # Delivery, capture, or connection failures release the slot.
+                    if request.status not in {
+                        ScreenReviewStatus.REQUESTED,
+                        ScreenReviewStatus.ACCEPTED,
+                        ScreenReviewStatus.SHARING,
+                    }:
                         continue
-                    reason = data.get("reason", "unknown")
+                    reason = str(data.get("reason", "unknown"))[:200]
                     await screen_review_manager.update_status(
                         review_id, ScreenReviewStatus.FAILED
                     )
@@ -348,13 +351,13 @@ async def participant_screen_review_ws(websocket: WebSocket):
         logger.exception("Participant screen review WS error: %s", exc)
     finally:
         if authenticated and participant_session_id:
-            await screen_review_manager.unregister_participant_ws(
-                participant_session_id
+            removed = await screen_review_manager.unregister_participant_ws(
+                participant_session_id, websocket
             )
             # Clean up any active reviews for this participant
-            cleaned = await screen_review_manager.cleanup_by_participant(
+            cleaned = (await screen_review_manager.cleanup_by_participant(
                 participant_session_id
-            )
+            )) if removed else []
             # Notify instructors of stopped reviews
             for req in cleaned:
                 try:

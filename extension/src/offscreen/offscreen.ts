@@ -1582,7 +1582,10 @@ chrome.runtime.onMessage.addListener(
       case 'SCREEN_REVIEW_ANSWER': {
         const sdp = message.sdp as string
         if (sdp) {
-          void screenReview.handleAnswer(sdp)
+          void screenReview.handleAnswer(sdp).catch(err => {
+            console.error('[ProctorAI] Screen answer failed', err)
+            void screenReview.stopScreenShare('answer_failed')
+          })
         }
         sendResponse({ ok: true })
         break

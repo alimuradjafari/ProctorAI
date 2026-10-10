@@ -349,15 +349,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 })
 
-chrome.runtime.onMessage.addListener((message) => {
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   // Only handle screen review overlay messages
   if (!message || typeof message.type !== 'string') return
 
   switch (message.type) {
     case 'SHOW_SCREEN_REVIEW_CONSENT': {
+      if (document.visibilityState !== 'visible') {
+        sendResponse({ ok: false })
+        break
+      }
       const reviewId = message.screen_review_id as string
       if (reviewId) {
         showConsentUI(reviewId)
+        sendResponse({ ok: true })
       }
       break
     }
@@ -366,12 +371,14 @@ chrome.runtime.onMessage.addListener((message) => {
       const reviewId = message.screen_review_id as string
       if (reviewId) {
         showActiveIndicator(reviewId)
+        sendResponse({ ok: true })
       }
       break
     }
 
     case 'HIDE_SCREEN_REVIEW_OVERLAY': {
       removeOverlay()
+      sendResponse({ ok: true })
       break
     }
   }

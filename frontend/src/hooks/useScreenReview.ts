@@ -91,7 +91,7 @@ function getStatusMessage(status: ScreenReviewStatus): string {
     case 'error':
       return 'Screen review request failed.'
     case 'failed':
-      return 'Screen review connection failed.'
+      return 'Screen connection failed. Retry; if you are on different networks, a TURN relay may be required.'
     case 'unreachable':
       return 'Student is not connected.'
     default:
@@ -104,12 +104,17 @@ export function useScreenReview(
 ): UseScreenReviewReturn {
   const [status, setStatus] = useState<ScreenReviewStatus>('idle')
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null)
-  const [activeReviewId, setActiveReviewId] = useState<string | null>(null)
+  const [activeReviewId, setActiveReviewIdState] = useState<string | null>(null)
 
   const pcRef = useRef<RTCPeerConnection | null>(null)
   const statusRef = useRef<ScreenReviewStatus>('idle')
   const reviewIdRef = useRef<string | null>(null)
-  const iceServersRef = useRef<RTCIceServer[]>([])
+  const setActiveReviewId = useCallback((id: string | null) => {
+    reviewIdRef.current = id
+    setActiveReviewIdState(id)
+  }, [])
+  const iceServersRef = useRef<RTCIceServer[]>([{ urls: 'stun:stun.l.google.com:19302' }])
+  const connectionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingRemoteIceCandidatesRef = useRef<RTCIceCandidateInit[]>([])
 
   // Fetch ICE servers from backend on mount (STUN/TURN config).
@@ -135,14 +140,13 @@ export function useScreenReview(
     statusRef.current = status
   }, [status])
 
-  useEffect(() => {
-    reviewIdRef.current = activeReviewId
-  }, [activeReviewId])
 
   /**
    * Clean up the peer connection and streams.
    */
   const cleanupPc = useCallback(() => {
+    if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current)
+    connectionTimeoutRef.current = null
     if (pcRef.current) {
       pcRef.current.onicecandidate = null
       pcRef.current.ontrack = null
@@ -164,6 +168,7 @@ export function useScreenReview(
         return
       }
 
+      cleanupPc()
       setStatus('requesting')
       setActiveReviewId(null)
 
@@ -286,6 +291,14 @@ export function useScreenReview(
         iceServers: iceServersRef.current.length > 0 ? iceServersRef.current : undefined,
       })
       pcRef.current = pc
+      connectionTimeoutRef.current = setTimeout(() => {
+        if (pcRef.current !== pc || pc.connectionState === 'connected') return
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: 'screen_review_stop', screen_review_id: reviewId }))
+        }
+        cleanupPc()
+        setStatus('failed')
+      }, 30_000)
 
       // Handle incoming screen video track
       pc.ontrack = (event) => {
@@ -311,7 +324,10 @@ export function useScreenReview(
 
       // Handle connection state changes
       pc.onconnectionstatechange = () => {
+        if (pcRef.current !== pc) return
         if (pc.connectionState === 'connected') {
+          if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current)
+          connectionTimeoutRef.current = null
           setStatus('active')
         } else if (pc.connectionState === 'failed') {
           cleanupPc()
@@ -347,6 +363,7 @@ export function useScreenReview(
           await pc.addIceCandidate(new RTCIceCandidate(candidate))
         }
 
+        if (pcRef.current !== pc || reviewIdRef.current !== reviewId) return
         const answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
 
@@ -361,6 +378,7 @@ export function useScreenReview(
         }
       } catch (err) {
         console.error('[ScreenReview] Failed to handle offer:', err)
+        if (pcRef.current !== pc) return
         cleanupPc()
         setStatus('failed')
       }
@@ -409,6 +427,7 @@ export function useScreenReview(
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current)
       if (pcRef.current) {
         pcRef.current.close()
         pcRef.current = null

@@ -31,9 +31,11 @@ export function LiveScreenViewer({
 }: LiveScreenViewerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
+  const [hasVideoFrame, setHasVideoFrame] = useState(false)
 
   // Attach stream to video element
   useEffect(() => {
+    setHasVideoFrame(false)
     const video = videoRef.current
     if (!video || !stream) return
 
@@ -141,6 +143,8 @@ export function LiveScreenViewer({
       <div className="relative bg-black" style={{ minHeight: '300px' }}>
         <video
           ref={videoRef}
+          onLoadedData={() => setHasVideoFrame(true)}
+          onPlaying={() => setHasVideoFrame(true)}
           autoPlay
           playsInline
           muted
@@ -152,13 +156,13 @@ export function LiveScreenViewer({
         />
 
         {/* No stream placeholder */}
-        {!stream && (
+        {(!stream || !hasVideoFrame) && (
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="text-center text-gray-400">
               <svg className="w-12 h-12 mx-auto mb-2 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
               </svg>
-              <p className="text-sm">Waiting for screen stream…</p>
+              <p className="text-sm">Waiting for screen video…</p>
             </div>
           </div>
         )}

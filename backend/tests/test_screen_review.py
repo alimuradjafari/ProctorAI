@@ -706,3 +706,27 @@ def test_screen_review_answer_cross_instructor_not_relayed(
         if req.timeout_task:
             req.timeout_task.cancel()
         loop.close()
+
+
+@pytest.mark.asyncio
+async def test_old_socket_disconnect_keeps_replacement_registered():
+    mgr = ScreenReviewManager()
+    old_ws, new_ws = AsyncMock(), AsyncMock()
+    await mgr.register_participant_ws("PS-reconnect", old_ws)
+    await mgr.register_participant_ws("PS-reconnect", new_ws)
+    assert not await mgr.unregister_participant_ws("PS-reconnect", old_ws)
+    assert await mgr.send_to_participant("PS-reconnect", {"type": "ping"})
+    new_ws.send_json.assert_awaited_once_with({"type": "ping"})
+    assert await mgr.unregister_participant_ws("PS-reconnect", new_ws)
+    assert not await mgr.send_to_participant("PS-reconnect", {"type": "ping"})
+
+
+@pytest.mark.asyncio
+async def test_failed_request_delivery_releases_active_slot():
+    mgr = ScreenReviewManager()
+    req = await mgr.create_request(1, "PS-offline", 10, AsyncMock())
+    assert req is not None
+    assert await mgr.update_status(req.screen_review_id, ScreenReviewStatus.FAILED)
+    replacement = await mgr.create_request(1, "PS-online", 10, AsyncMock())
+    assert replacement is not None
+    await mgr.update_status(replacement.screen_review_id, ScreenReviewStatus.STOPPED)

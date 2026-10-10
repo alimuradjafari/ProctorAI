@@ -72,6 +72,9 @@ let participantScreenReviewWs: WebSocket | null = null
 
 /** Whether the participant screen review WS is connecting. */
 let screenReviewWsConnecting = false
+let screenReviewHeartbeat: ReturnType<typeof setInterval> | null = null
+let screenReviewConsentTabId: number | null = null
+let lastScreenReviewConsentTabId: number | null = null
 
 /**
  * Fetch ICE servers from the backend for WebRTC screen sharing.
@@ -173,7 +176,11 @@ function onTabActivated(activeInfo: chrome.tabs.TabActiveInfo): void {
     return
   }
 
+  const previousTabId = lastActiveTabId
   lastActiveTabId = activeInfo.tabId
+  // Opening our consent page and returning from it are application actions.
+  if (activeInfo.tabId === lastScreenReviewConsentTabId ||
+      previousTabId === lastScreenReviewConsentTabId) return
 
   const event: EventSubmissionRequest = {
     event_type: 'tab_switch',
@@ -805,23 +812,35 @@ async function connectParticipantScreenReviewWs(): Promise<void> {
     return
   }
 
-  const session = await getStoredSession()
-  if (!session) return
-
   screenReviewWsConnecting = true
+  const session = await getStoredSession()
+  if (!session || !listenersAttached) {
+    screenReviewWsConnecting = false
+    return
+  }
 
   try {
     const ws = new WebSocket(`${WS_BASE_URL}/ws/participant-screen-review`)
     participantScreenReviewWs = ws
+    let lastMessageAt = Date.now()
 
     ws.onopen = () => {
       ws.send(JSON.stringify({
         type: 'authenticate',
         access_token: session.participant_access_token,
       }))
+      // Chrome MV3 needs actual WebSocket traffic within its 30-second idle window.
+      if (screenReviewHeartbeat) clearInterval(screenReviewHeartbeat)
+      screenReviewHeartbeat = setInterval(() => {
+        if (ws !== participantScreenReviewWs) return
+        if (Date.now() - lastMessageAt > 45_000) { ws.close(); return }
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }))
+      }, 20_000)
     }
 
     ws.onmessage = (event) => {
+      if (ws !== participantScreenReviewWs) return
+      lastMessageAt = Date.now()
       try {
         const data = JSON.parse(event.data as string)
         handleScreenReviewWsMessage(data)
@@ -831,6 +850,10 @@ async function connectParticipantScreenReviewWs(): Promise<void> {
     }
 
     ws.onclose = () => {
+      if (ws !== participantScreenReviewWs) return
+      if (screenReviewHeartbeat) clearInterval(screenReviewHeartbeat)
+      screenReviewHeartbeat = null
+      cleanupScreenReview()
       participantScreenReviewWs = null
       screenReviewWsConnecting = false
 
@@ -871,6 +894,9 @@ function handleScreenReviewWsMessage(data: Record<string, unknown>): void {
     })
     return
   }
+
+  if (['screen_review_answer', 'screen_review_ice_candidate', 'screen_review_stopped'].includes(type) &&
+      data.screen_review_id !== activeScreenReviewId) return
 
   if (type === 'screen_review_answer') {
     // Instructor sent SDP answer — relay to offscreen
@@ -970,19 +996,14 @@ async function findTabWithOverlayReceiver(
 /**
  * Deliver a message to an overlay that is known to be listening.
  *
- * The overlay's message listener renders UI and never calls sendResponse, so
- * the returned promise rejects with "message port closed" even though the
- * message was delivered and acted upon. That rejection is not a failure.
+ * Require an acknowledgement so a missing receiver triggers the consent-page fallback.
  */
 async function sendToOverlay(
   tabId: number,
   message: Record<string, unknown>
 ): Promise<void> {
-  try {
-    await chrome.tabs.sendMessage(tabId, message)
-  } catch {
-    // Expected — no listener responds to overlay UI messages.
-  }
+  const response = await chrome.tabs.sendMessage(tabId, message)
+  if (!response?.ok) throw new Error('Screen review overlay did not acknowledge delivery')
 }
 
 /**
@@ -1009,12 +1030,25 @@ async function sendToOverlay(
  *          injection (Phase 13C guard) and retry.
  */
 function routeToActiveTab(message: Record<string, unknown>): void {
-  void deliverScreenReviewMessage(message)
+  void deliverScreenReviewMessage(message).then(async (delivered) => {
+    if (delivered || message.type !== 'SHOW_SCREEN_REVIEW_CONSENT' ||
+        message.screen_review_id !== activeScreenReviewId) return
+    const tab = await chrome.tabs.create({
+      url: chrome.runtime.getURL('screen-review-consent.html'), active: false,
+    })
+    if (message.screen_review_id !== activeScreenReviewId) {
+      if (tab.id !== undefined) await chrome.tabs.remove(tab.id)
+      return
+    }
+    screenReviewConsentTabId = tab.id ?? null
+    lastScreenReviewConsentTabId = screenReviewConsentTabId
+    if (tab.id !== undefined) await chrome.tabs.update(tab.id, { active: true })
+  }).catch(err => console.error('[ProctorAI] Consent delivery failed', err))
 }
 
 async function deliverScreenReviewMessage(
   message: Record<string, unknown>
-): Promise<void> {
+): Promise<boolean> {
   const resolvedTabId = monitoredTabId ?? (await resolveOverlayTabOnDemand())
 
   if (resolvedTabId === null) {
@@ -1022,7 +1056,7 @@ async function deliverScreenReviewMessage(
       '[ProctorAI] Cannot route screen review message: no usable tab found',
       message.type
     )
-    return
+    return false
   }
 
   if (monitoredTabId === null) {
@@ -1059,7 +1093,7 @@ async function deliverScreenReviewMessage(
           '[ProctorAI] No suitable tab found in exam window.',
           'Student must navigate to an http(s) page before screen review can work.'
         )
-        return
+        return false
       }
       targetTabId = fallbackId
       targetUrl = (await chrome.tabs.get(targetTabId)).url
@@ -1080,7 +1114,7 @@ async function deliverScreenReviewMessage(
           message.type,
           targetTabId
         )
-        return
+        return true
       }
 
       // Unexpected response — try injecting (but only for non-restricted URLs)
@@ -1095,7 +1129,7 @@ async function deliverScreenReviewMessage(
           '[ProctorAI] Content script not available on restricted page and no fallback found.',
           'If the extension was just installed/updated, refresh the exam tab.'
         )
-        return
+        return false
       }
       console.warn(
         '[ProctorAI] Overlay not loaded in tab, will attempt injection:',
@@ -1114,7 +1148,7 @@ async function deliverScreenReviewMessage(
         message.type,
         receiverTabId
       )
-      return
+      return true
     }
 
     // Step 3: Conditional injection fallback (Phase 13C guard preserved)
@@ -1124,6 +1158,7 @@ async function deliverScreenReviewMessage(
       message.type,
       targetTabId
     )
+    return true
   } catch (err) {
     console.error(
       '[ProctorAI] Failed to route screen review message:',
@@ -1131,6 +1166,7 @@ async function deliverScreenReviewMessage(
       targetTabId,
       err
     )
+    return false
   }
 }
 
@@ -1259,10 +1295,11 @@ async function startScreenReviewCapture(reviewId: string): Promise<void> {
         response.error
       )
       clearFocusSuppression()
-      sendScreenReviewFailed(reviewId, 'capture_failed')
+      if (activeScreenReviewId === reviewId) sendScreenReviewFailed(reviewId, 'capture_failed')
       return
     }
 
+    if (activeScreenReviewId !== reviewId) return
     console.log('[ProctorAI] START_SCREEN_REVIEW_CAPTURE sent to offscreen')
 
     // Show student that live screen review is active
@@ -1276,7 +1313,7 @@ async function startScreenReviewCapture(reviewId: string): Promise<void> {
       err
     )
     clearFocusSuppression()
-    sendScreenReviewFailed(reviewId, 'capture_failed')
+    if (activeScreenReviewId === reviewId) sendScreenReviewFailed(reviewId, 'capture_failed')
   }
 }
 
@@ -1343,6 +1380,10 @@ function sendScreenReviewAccepted(reviewId: string): void {
  */
 function cleanupScreenReview(): void {
   activeScreenReviewId = null
+  if (screenReviewConsentTabId !== null) {
+    void chrome.tabs.remove(screenReviewConsentTabId).catch(() => {})
+    screenReviewConsentTabId = null
+  }
   clearFocusSuppression()
 
   // Stop offscreen screen share
@@ -1415,6 +1456,8 @@ function detachListeners(): void {
   void sendGeometryCommand('STOP_BROWSER_GEOMETRY_MONITORING', true)
 
   // Phase 10.1 — disconnect screen review WS and clean up
+  if (screenReviewHeartbeat) clearInterval(screenReviewHeartbeat)
+  screenReviewHeartbeat = null
   if (participantScreenReviewWs) {
     participantScreenReviewWs.close()
     participantScreenReviewWs = null
@@ -1520,6 +1563,11 @@ const CAMERA_EVENT_WHITELIST = new Set([
 
 chrome.runtime.onMessage.addListener(
   (message, sender, sendResponse) => {
+    if (message.target === 'offscreen') return false
+    if (message.type === 'GET_SCREEN_REVIEW_REQUEST') {
+      sendResponse({ screen_review_id: activeScreenReviewId })
+      return false
+    }
     // ---- Popup messages ----
     if (message.type === 'GET_STATUS') {
       sendResponse({
@@ -1705,7 +1753,7 @@ chrome.runtime.onMessage.addListener(
         // Offscreen generated SDP offer — relay to backend
         const offer = parseOfferMessage(message)
 
-        if (offer !== null && participantScreenReviewWs &&
+        if (offer !== null && offer.screen_review_id === activeScreenReviewId && participantScreenReviewWs &&
             participantScreenReviewWs.readyState === WebSocket.OPEN) {
           participantScreenReviewWs.send(JSON.stringify({
             type: 'screen_review_offer',
@@ -1720,7 +1768,7 @@ chrome.runtime.onMessage.addListener(
         // Offscreen generated ICE candidate — relay to backend
         const ice = parseIceCandidateMessage(message)
 
-        if (ice !== null && participantScreenReviewWs &&
+        if (ice !== null && ice.screen_review_id === activeScreenReviewId && participantScreenReviewWs &&
             participantScreenReviewWs.readyState === WebSocket.OPEN) {
           participantScreenReviewWs.send(JSON.stringify({
             type: 'screen_review_ice_candidate',

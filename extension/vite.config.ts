@@ -68,6 +68,7 @@ export default defineConfig(({ mode }) => {
     rollupOptions: {
       input: {
         popup: resolve(__dirname, 'src/popup/popup.tsx'),
+        'screen-review-consent': resolve(__dirname, 'src/screenReview/consent-page.ts'),
         background: resolve(__dirname, 'src/background/service-worker.ts'),
         offscreen: resolve(__dirname, 'src/offscreen/offscreen.ts'),
         content: resolve(__dirname, 'src/content/browser-monitor.ts'),
