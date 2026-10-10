@@ -30,6 +30,7 @@ export function LiveScreenViewer({
   onEndReview,
 }: LiveScreenViewerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
+  const viewerRef = useRef<HTMLDivElement>(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [hasVideoFrame, setHasVideoFrame] = useState(false)
 
@@ -68,7 +69,7 @@ export function LiveScreenViewer({
 
   // Fullscreen toggle
   const toggleFullscreen = useCallback(() => {
-    const container = videoRef.current?.parentElement
+    const container = viewerRef.current
     if (!container) return
 
     if (!document.fullscreenElement) {
@@ -83,19 +84,19 @@ export function LiveScreenViewer({
   // Listen for fullscreen change
   useEffect(() => {
     const handler = () => {
-      setIsFullscreen(!!document.fullscreenElement)
+      setIsFullscreen(document.fullscreenElement === viewerRef.current)
     }
     document.addEventListener('fullscreenchange', handler)
     return () => document.removeEventListener('fullscreenchange', handler)
   }, [])
 
   return (
-    <div className="bg-gray-900 rounded-xl overflow-hidden">
+    <div ref={viewerRef} className="min-w-0 bg-gray-900 rounded-xl overflow-hidden">
       {/* Header bar */}
-      <div className="flex items-center justify-between px-4 py-2 bg-gray-800 border-b border-gray-700">
-        <div className="flex items-center gap-3">
+      <div className="flex flex-col gap-3 px-3 py-3 bg-gray-800 border-b border-gray-700">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 min-w-0">
           {/* LIVE indicator */}
-          <div className="flex items-center gap-1.5">
+          <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
             <span className="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse" />
             <span className="text-xs font-semibold text-red-400 uppercase tracking-wide">
               Live Screen
@@ -103,19 +104,20 @@ export function LiveScreenViewer({
           </div>
 
           {/* Student info */}
-          <div className="text-sm text-gray-200">
+          <div className="min-w-0 break-words text-sm text-gray-200">
             <span className="font-medium">{studentName}</span>
             <span className="text-gray-400 ml-2">({studentId})</span>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <RiskBadge level={riskLevel} showBar score={riskScore} />
 
           {/* Fullscreen button */}
           <button
             onClick={toggleFullscreen}
-            className="p-1.5 text-gray-400 hover:text-white rounded transition-colors"
+            className="shrink-0 p-2 text-gray-400 hover:text-white rounded transition-colors"
+            aria-label={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
             title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
           >
             {isFullscreen ? (
@@ -132,7 +134,7 @@ export function LiveScreenViewer({
           {/* End review button */}
           <button
             onClick={onEndReview}
-            className="px-3 py-1 bg-red-600 hover:bg-red-700 text-white text-xs font-medium rounded-md transition-colors"
+            className="shrink-0 whitespace-nowrap px-3 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-medium rounded-md transition-colors"
           >
             End Live Review
           </button>
