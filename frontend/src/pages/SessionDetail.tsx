@@ -58,6 +58,9 @@ function SessionDetail() {
   // Action state
   const [actionLoading, setActionLoading] = useState(false)
 
+  const [activeTab, setActiveTab] = useState<'monitoring' | 'students'>('monitoring')
+  const [connectionsExpanded, setConnectionsExpanded] = useState(false)
+
   // Participants state
   const [participants, setParticipants] = useState<Participant[]>([])
 
@@ -86,6 +89,8 @@ function SessionDetail() {
   } = useScreenReview(wsRef)
 
   useEffect(() => {
+    setActiveTab('monitoring')
+    setConnectionsExpanded(false)
     loadSession()
     loadRoster()
     loadParticipants()
@@ -306,6 +311,11 @@ function SessionDetail() {
     }
   }
 
+  const recentParticipants = [...participants].sort((a, b) =>
+    Date.parse(b.joined_at) - Date.parse(a.joined_at) || a.participant_session_id.localeCompare(b.participant_session_id)
+  )
+  const visibleParticipants = connectionsExpanded ? recentParticipants : recentParticipants.slice(0, 5)
+
   // ── Render ────────────────────────────────────────────────────
 
   if (loading) {
@@ -335,6 +345,17 @@ function SessionDetail() {
           wsState={wsState}
           rosterCount={roster.length}
           error={error}
+          navigation={
+            <nav aria-label="Session views" className="inline-flex rounded-lg bg-gray-100 p-1 gap-1">
+              {(['monitoring', 'students'] as const).map((tab) => (
+                <button key={tab} type="button" aria-pressed={activeTab === tab}
+                  aria-controls={`session-${tab}`} onClick={() => setActiveTab(tab)}
+                  className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${activeTab === tab ? 'bg-white text-primary-700 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
+                  {tab === 'monitoring' ? 'Monitoring' : 'Students'}
+                </button>
+              ))}
+            </nav>
+          }
         />
 
         {/* Lifecycle Actions (inside header card's border is handled by SessionHeader) */}
@@ -347,15 +368,25 @@ function SessionDetail() {
           />
         </div>
 
+        <div id="session-monitoring" hidden={activeTab !== 'monitoring'}>
         {/* Summary Cards */}
         <SessionSummaryCards riskSnapshots={riskSnapshots} eventCount={events.length} />
 
+        {/* Risk Leaderboard */}
+        <RiskTable snapshots={riskSnapshots} onReview={setReviewTarget} />
+
+        {/* Live Monitoring Events */}
+        <LiveEventFeed events={events} sessionStatus={session.status} />
+
+        </div>
+
+        <div id="session-students" hidden={activeTab !== 'students'}>
         <section className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6" aria-label="Student connections">
           <h2 className="text-lg font-semibold mb-3">Student connections ({participants.length})</h2>
           <p className="text-xs text-gray-500 mb-3">Connection loss can take about a minute to detect. It does not indicate cheating.</p>
           {participants.length === 0 && <p className="text-sm text-gray-500">No students have joined yet.</p>}
-          <ul className="divide-y divide-gray-100">
-            {participants.map((p) => {
+          <ul className={`divide-y divide-gray-100 ${connectionsExpanded ? 'max-h-[450px] overflow-y-auto' : ''}`}>
+            {visibleParticipants.map((p) => {
               const online = p.status === 'monitoring'
               const label = session.status === 'ended' || session.status === 'cancelled' ? 'Session ended' : online ? 'Online' : p.status === 'ended' ? 'Left' : p.status === 'disconnected' ? 'Disconnected' : 'Awaiting connection'
               return <li key={p.participant_session_id} className="flex flex-wrap items-center justify-between gap-2 py-3">
@@ -366,15 +397,18 @@ function SessionDetail() {
               </li>
             })}
           </ul>
+          {participants.length > 5 && (
+            <div className="pt-3 border-t border-gray-100 flex items-center justify-between gap-3">
+              <button type="button" aria-expanded={connectionsExpanded} onClick={() => setConnectionsExpanded(!connectionsExpanded)}
+                className="text-xs font-medium text-primary-600 hover:text-primary-800 transition-colors">
+                {connectionsExpanded ? 'Show less' : `Show all ${participants.length} students`}
+              </button>
+              <span className="text-xs text-gray-400">Showing {visibleParticipants.length} of {participants.length}</span>
+            </div>
+          )}
         </section>
 
-        {/* Risk Leaderboard */}
-        <RiskTable snapshots={riskSnapshots} onReview={setReviewTarget} />
-
-        {/* Live Monitoring Events */}
-        <LiveEventFeed events={events} sessionStatus={session.status} />
-
-        {/* Roster (collapsible, visually secondary) */}
+        {/* Student roster */}
         <RosterSection
           roster={roster}
           addingStudent={addingStudent}
@@ -384,6 +418,8 @@ function SessionDetail() {
           onDeleteEntry={handleDeleteRosterEntry}
           onCsvUpload={handleCsvUpload}
         />
+
+        </div>
 
         {/* Privacy notice */}
         <p className="text-center text-xs text-gray-400 py-4">

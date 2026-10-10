@@ -14,6 +14,7 @@ interface RiskTableProps {
  */
 export function RiskTable({ snapshots, onReview }: RiskTableProps) {
   const [search, setSearch] = useState('')
+  const [expanded, setExpanded] = useState(false)
 
   const filtered = useMemo(() => {
     if (!search.trim()) return snapshots
@@ -24,6 +25,8 @@ export function RiskTable({ snapshots, onReview }: RiskTableProps) {
         s.student_id.toLowerCase().includes(q)
     )
   }, [snapshots, search])
+
+  const visible = expanded ? filtered : filtered.slice(0, 5)
 
   if (snapshots.length === 0) {
     return null // Summary cards handle the empty state
@@ -54,7 +57,7 @@ export function RiskTable({ snapshots, onReview }: RiskTableProps) {
               type="text"
               placeholder="Search student name or ID…"
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => { setSearch(e.target.value); setExpanded(false) }}
               className="w-full pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none bg-gray-50"
             />
           </div>
@@ -68,9 +71,9 @@ export function RiskTable({ snapshots, onReview }: RiskTableProps) {
             : 'No participants currently require high-risk review.'}
         </p>
       ) : (
-        <div className="overflow-x-auto">
+        <div className={`overflow-x-auto ${expanded ? 'max-h-[450px] overflow-y-auto' : ''}`}>
           <table className="w-full text-sm">
-            <thead>
+            <thead className={expanded ? 'sticky top-0 z-10' : ''}>
               <tr className="border-y border-gray-100 bg-gray-50">
                 <th className="text-left py-2.5 px-6 font-medium text-gray-500 text-xs uppercase tracking-wide">Student</th>
                 <th className="text-left py-2.5 px-3 font-medium text-gray-500 text-xs uppercase tracking-wide">Student ID</th>
@@ -82,7 +85,7 @@ export function RiskTable({ snapshots, onReview }: RiskTableProps) {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((snap) => {
+              {visible.map((snap) => {
                 const needsReview = snap.risk_level === 'critical' || snap.risk_level === 'high'
 
                 return (
@@ -155,6 +158,16 @@ export function RiskTable({ snapshots, onReview }: RiskTableProps) {
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {filtered.length > 5 && (
+        <div className="px-6 py-3 border-t border-gray-100 flex items-center justify-between gap-3">
+          <button type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}
+            className="text-xs font-medium text-primary-600 hover:text-primary-800 transition-colors">
+            {expanded ? 'Show less' : `Show all ${filtered.length} students`}
+          </button>
+          <span className="text-xs text-gray-400">Showing {visible.length} of {filtered.length}{search.trim() ? ' matches' : ' students'}</span>
         </div>
       )}
 

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import type { MonitoringSession, WsConnectionState } from '../types/monitoring'
 
@@ -7,6 +7,7 @@ interface SessionHeaderProps {
   wsState: WsConnectionState
   rosterCount: number
   error: string | null
+  navigation?: ReactNode
 }
 
 const STATUS_BADGE: Record<string, { bg: string; text: string; dot: string; label: string }> = {
@@ -35,7 +36,7 @@ function getWsIndicator(state: WsConnectionState) {
   }
 }
 
-export function SessionHeader({ session, wsState, rosterCount, error }: SessionHeaderProps) {
+export function SessionHeader({ session, wsState, rosterCount, error, navigation }: SessionHeaderProps) {
   const [copied, setCopied] = useState(false)
   const badge = STATUS_BADGE[session.status] ?? STATUS_BADGE.draft
   const ws = getWsIndicator(wsState)
@@ -53,7 +54,7 @@ export function SessionHeader({ session, wsState, rosterCount, error }: SessionH
   return (
     <>
       {/* Back link */}
-      <div className="mb-4">
+      <div className="mb-4 flex flex-wrap items-center gap-4">
         <Link
           to="/dashboard"
           className="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-800 transition-colors"
@@ -63,6 +64,7 @@ export function SessionHeader({ session, wsState, rosterCount, error }: SessionH
           </svg>
           Back to Dashboard
         </Link>
+        {navigation}
       </div>
 
       {error && (
