@@ -1,4 +1,5 @@
 import re
+from app.services.participant_presence import effective_status
 
 from sqlalchemy.orm import Session
 
@@ -167,7 +168,7 @@ class ParticipantService:
                 "participant_session_id": p.participant_session_id,
                 "student_id": p.student_id,
                 "student_name": p.student_name,
-                "status": p.status.value,
+                "status": effective_status(p),
                 "joined_at": p.joined_at,
                 "last_seen_at": p.last_seen_at,
             }

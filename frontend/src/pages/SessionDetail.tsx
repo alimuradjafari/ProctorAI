@@ -59,7 +59,7 @@ function SessionDetail() {
   const [actionLoading, setActionLoading] = useState(false)
 
   // Participants state
-  const [_participants, setParticipants] = useState<Participant[]>([])
+  const [participants, setParticipants] = useState<Participant[]>([])
 
   // Monitoring Events state
   const [events, setEvents] = useState<MonitoringEvent[]>([])
@@ -92,6 +92,12 @@ function SessionDetail() {
     loadEvents()
     loadRisk()
   }, [sessionId])
+
+  useEffect(() => {
+    if (session?.status !== 'live' && session?.status !== 'waiting') return
+    const timer = setInterval(() => { void loadParticipants() }, 10000)
+    return () => clearInterval(timer)
+  }, [sessionId, session?.status])
 
   // Keep risk snapshots ref in sync for ws.onmessage access
   useEffect(() => {
@@ -133,6 +139,9 @@ function SessionDetail() {
 
         if (data.type === 'authenticated') {
           setWsState('connected')
+          void loadParticipants()
+        } else if (data.type === 'participant_presence_updated') {
+          void loadParticipants()
         } else if (data.type === 'monitoring_event') {
           const newEvent = enrichMonitoringEvent(
             data.event as Record<string, unknown>,
@@ -340,6 +349,24 @@ function SessionDetail() {
 
         {/* Summary Cards */}
         <SessionSummaryCards riskSnapshots={riskSnapshots} eventCount={events.length} />
+
+        <section className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6" aria-label="Student connections">
+          <h2 className="text-lg font-semibold mb-3">Student connections ({participants.length})</h2>
+          <p className="text-xs text-gray-500 mb-3">Connection loss can take about a minute to detect. It does not indicate cheating.</p>
+          {participants.length === 0 && <p className="text-sm text-gray-500">No students have joined yet.</p>}
+          <ul className="divide-y divide-gray-100">
+            {participants.map((p) => {
+              const online = p.status === 'monitoring'
+              const label = session.status === 'ended' || session.status === 'cancelled' ? 'Session ended' : online ? 'Online' : p.status === 'ended' ? 'Left' : p.status === 'disconnected' ? 'Disconnected' : 'Awaiting connection'
+              return <li key={p.participant_session_id} className="flex flex-wrap items-center justify-between gap-2 py-3">
+                <div className="min-w-0 break-words"><span className="font-medium">{p.student_name}</span> <span className="text-sm text-gray-500">({p.student_id})</span>
+                  {p.last_seen_at && <p className="text-xs text-gray-500">Last seen: {new Date(p.last_seen_at.endsWith('Z') ? p.last_seen_at : `${p.last_seen_at}Z`).toLocaleString()}</p>}
+                </div>
+                <span className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium ${label === 'Online' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-700'}`}>{label}</span>
+              </li>
+            })}
+          </ul>
+        </section>
 
         {/* Risk Leaderboard */}
         <RiskTable snapshots={riskSnapshots} onReview={setReviewTarget} />

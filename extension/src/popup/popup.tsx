@@ -172,6 +172,10 @@ function Popup() {
   }
 
   async function handleDisconnect() {
+    if (session) {
+      // Offline departures still disconnect locally; heartbeat expiry covers them.
+      await apiService.leaveSession(session.participant_access_token).catch(() => {})
+    }
     // Stop camera first
     await chrome.runtime
       .sendMessage({ type: 'STOP_CAMERA' })

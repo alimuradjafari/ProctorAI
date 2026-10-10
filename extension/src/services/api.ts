@@ -30,6 +30,15 @@ class ApiService {
     return response.json()
   }
 
+  async leaveSession(token: string): Promise<void> {
+    const response = await fetch(`${this.baseUrl}/participant-sessions/leave`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(3000),
+    })
+    if (!response.ok) throw new Error('Unable to notify server of departure')
+  }
+
   async getParticipantMe(token: string): Promise<ParticipantMeResponse> {
     const response = await fetch(`${this.baseUrl}/participant-sessions/me`, {
       headers: { Authorization: `Bearer ${token}` },

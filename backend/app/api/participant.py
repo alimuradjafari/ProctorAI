@@ -103,3 +103,17 @@ async def submit_event(
         await broadcast_event(result)
 
     return result["event"]
+
+
+@router.post("/leave")
+async def leave_session(
+    token_payload: dict = Depends(get_current_participant),
+    db: Session = Depends(get_db),
+):
+    from app.models.participant_session import ParticipantStatus
+    from app.services.participant_presence import update_presence
+    from app.services.websocket_manager import manager
+    session_id = update_presence(db, token_payload["sub"], ParticipantStatus.ENDED)
+    if session_id is not None:
+        await manager.broadcast_to_session(session_id, {"type": "participant_presence_updated"})
+    return {"ok": True}

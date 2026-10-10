@@ -24,6 +24,9 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.core.security import verify_participant_token, TokenError
 from app.core.database import SessionLocal
+from app.models.participant_session import ParticipantStatus
+from app.services.participant_presence import update_presence, PRESENCE_TIMEOUT_SECONDS
+from app.services.websocket_manager import manager
 from app.repositories.participant_repository import ParticipantRepository
 from app.services.screen_review_manager import (
     ScreenReviewStatus,
@@ -44,6 +47,17 @@ MAX_CANDIDATE_SIZE = 1024  # 1 KB
 _MAX_WS_MESSAGE_SIZE = 65_536  # 64 KB
 
 router = APIRouter()
+
+
+async def record_presence(psid, status, reconnect=False):
+    db = SessionLocal()
+    try:
+        session_id = update_presence(db, psid, status, reconnect)
+    finally:
+        db.close()
+    if session_id is not None:
+        await manager.broadcast_to_session(session_id, {"type": "participant_presence_updated"})
+
 
 
 @router.websocket("/ws/participant-screen-review")
@@ -124,11 +138,12 @@ async def participant_screen_review_ws(websocket: WebSocket):
             participant_session_id, websocket
         )
         authenticated = True
+        await record_presence(participant_session_id, ParticipantStatus.MONITORING, reconnect=True)
 
         # --- Signaling phase ---
         while True:
             try:
-                raw = await websocket.receive_text()
+                raw = await asyncio.wait_for(websocket.receive_text(), timeout=PRESENCE_TIMEOUT_SECONDS)
             except WebSocketDisconnect:
                 break
             except Exception:
@@ -343,6 +358,7 @@ async def participant_screen_review_ws(websocket: WebSocket):
 
             # --- Ping/pong ---
             elif msg_type == "ping":
+                await record_presence(participant_session_id, ParticipantStatus.MONITORING)
                 await websocket.send_json({"type": "pong"})
 
     except WebSocketDisconnect:
@@ -354,6 +370,8 @@ async def participant_screen_review_ws(websocket: WebSocket):
             removed = await screen_review_manager.unregister_participant_ws(
                 participant_session_id, websocket
             )
+            if removed:
+                await record_presence(participant_session_id, ParticipantStatus.DISCONNECTED)
             # Clean up any active reviews for this participant
             cleaned = (await screen_review_manager.cleanup_by_participant(
                 participant_session_id
